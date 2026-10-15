@@ -96,8 +96,8 @@ public final class Strikes {
 
 		// 100 ± 16 blocks horizontal, then land on the heightmap top, 0–teleportMaxLift up.
 		// getHeight returns the world bottom for an unloaded column, which would drop the player
-		// into bedrock or the void, so load the destination chunk first and keep the column inside
-		// the world border.
+		// into bedrock or the void, so retry a few angles until the column is loaded and above
+		// world-bottom; the last attempt is used as is if none qualifies.
 		ThreadLocalRandom rng = ThreadLocalRandom.current();
 		double x = 0;
 		double z = 0;

@@ -374,8 +374,12 @@ public final class StalkerManager {
 		state.chaseTicks++;
 		Strikes.tickChase(villager, player);
 		// The blindness timer IS the chase timer (plan §4): when it expires with
-		// the player alive, the villager goes dazed.
+		// the player alive, the villager goes dazed. This edge is owned here alone (Strikes only
+		// drops its bookkeeping), so clear that bookkeeping too: a player who cuts the blindness
+		// short (milk) ends the chase before Strikes' tick counter would, and a surviving entry
+		// would resume mid-count on the next chase.
 		if (!player.hasEffect(MobEffects.BLINDNESS)) {
+			Strikes.clear(player);
 			state.phase = Phases.Phase.STUN;
 			state.stunTicks = c.stunDurationTicks();
 			state.chaseTicks = 0;
@@ -652,7 +656,6 @@ public final class StalkerManager {
 		}
 		Attachments.unbindPlayer(player);
 		Strikes.clear(player);
-		DEBUG_PLAYERS.remove(player.getUUID());
 		if (state != null && player.level() instanceof ServerLevel level) {
 			if (level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 				Attachments.unbindVillager(villager);

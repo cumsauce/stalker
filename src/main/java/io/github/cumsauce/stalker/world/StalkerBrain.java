@@ -192,7 +192,7 @@ public final class StalkerBrain {
 
 	/**
 	 * The movement task: each tick reads the target and speed memories and (re-)issues
-	 * {@link PathNavigation#moveTo}, re-pathing when the navigation is done or the target has moved
+	 * {@link PathNavigation#moveTo}, re-pathing when the target has moved or the navigation has finished its path (throttled)
 	 * more than {@code REPATH_DISTANCE_SQR} from the position we last pathed to. Vanilla behaviors
 	 * occasionally issue their own {@code moveTo}; ours runs at priority 0 and re-issues so it wins.
 	 */
@@ -201,8 +201,13 @@ public final class StalkerBrain {
 		/** Re-path when the target moved more than 1 block (square of 1.0) from the last pathed point. */
 		private static final double REPATH_DISTANCE_SQR = 1.0;
 
+		/** Minimum ticks between re-pathing a finished path (a pushed-off villager must recover, but
+		 * {@code navigation.isDone()} alone is true every tick and would re-run the A* each one). */
+		private static final long DONE_REPATH_INTERVAL_TICKS = 20;
+
 		@Nullable
 		private Vec3 lastPathedTarget;
+		private long lastDoneRepathTimestamp;
 
 		MoveTargetTask() {
 			// Effectively no timeout: duration is Integer.MAX_VALUE ticks; the task ends only when the
@@ -218,6 +223,7 @@ public final class StalkerBrain {
 		@Override
 		protected void start(ServerLevel level, Villager villager, long timestamp) {
 			this.lastPathedTarget = null;
+			this.lastDoneRepathTimestamp = 0;
 		}
 
 		@Override
@@ -227,23 +233,26 @@ public final class StalkerBrain {
 				return;
 			}
 			PathNavigation navigation = villager.getNavigation();
-			// Repath only when the target moved (or on the first tick). Do NOT test navigation.isDone():
-			// that is true every tick once a path finishes, which turned this into a full A* pathfind
-			// per brain tick. The manager already re-issues the target every 10 ticks when it moves.
+			// A finished path re-paths at most once per interval: a villager pushed off its route must
+			// recover, but isDone() is true every tick afterwards and alone would re-run the A* each one.
+			// The move attempt is remembered even when no path is found, so an unreachable target
+			// does not spin the pathfinder either.
 			boolean stale = this.lastPathedTarget == null
-				|| this.lastPathedTarget.distanceToSqr(target) > REPATH_DISTANCE_SQR;
+				|| this.lastPathedTarget.distanceToSqr(target) > REPATH_DISTANCE_SQR
+				|| (navigation.isDone()
+					&& timestamp - this.lastDoneRepathTimestamp >= DONE_REPATH_INTERVAL_TICKS);
 			if (stale) {
 				float speed = villager.getBrain().getMemory(STALKING_SPEED).orElse(1.0F);
 				navigation.moveTo(target.x, target.y, target.z, speed);
-				// Remember the attempt even when no path is found, so an unreachable target does not
-				// re-run the pathfinder every tick.
 				this.lastPathedTarget = target;
+				this.lastDoneRepathTimestamp = timestamp;
 			}
 		}
 
 		@Override
 		protected void stop(ServerLevel level, Villager villager, long timestamp) {
 			this.lastPathedTarget = null;
+			this.lastDoneRepathTimestamp = 0;
 			// Hold position when the manager cleared the target mid-run.
 			if (!villager.getBrain().hasMemoryValue(STALKING_TARGET)) {
 				villager.getNavigation().stop();
