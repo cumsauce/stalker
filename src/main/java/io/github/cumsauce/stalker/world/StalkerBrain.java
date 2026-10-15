@@ -92,6 +92,16 @@ public final class StalkerBrain {
 	}
 
 	/**
+	 * Forces this class's static initializer (and so the Activity/memory registrations) to run at
+	 * mod-init time. Fabric freezes {@code BuiltInRegistries} right after mod init, and a
+	 * {@code Registry.register} into a frozen registry throws. The mixin's first call happens at the
+	 * first villager's brain build — a world load — which is far too late. {@code Stalker.onInitialize}
+	 * calls this.
+	 */
+	public static void bootstrap() {
+	}
+
+	/**
 	 * Called from {@link VillagerBrainMixin} at the head of {@code Villager#registerBrainGoals}, which
 	 * runs on every brain build including {@code refreshBrain} after profession/baby changes. Adds the
 	 * STALKING activity with a memory-gated move task plus a CORE-package assert task. Idempotent per
