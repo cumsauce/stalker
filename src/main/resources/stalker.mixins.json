@@ -2,7 +2,9 @@
 	"required": true,
 	"package": "io.github.cumsauce.stalker.mixin",
 	"compatibilityLevel": "JAVA_21",
-	"mixins": [],
+	"mixins": [
+		"VillagerBrainMixin"
+	],
 	"client": [],
 	"injectors": {
 		"defaultRequire": 1

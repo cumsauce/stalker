@@ -9,6 +9,9 @@
 	"entrypoints": {
 		"main": [
 			"io.github.cumsauce.stalker.Stalker"
+		],
+		"client": [
+			"io.github.cumsauce.stalker.StalkerClient"
 		]
 	},
 	"mixins": [

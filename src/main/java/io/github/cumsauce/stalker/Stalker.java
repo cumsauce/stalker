@@ -1,5 +1,10 @@
 package io.github.cumsauce.stalker;
 
+import io.github.cumsauce.stalker.bribe.BribeInteract;
+import io.github.cumsauce.stalker.command.StalkerCommands;
+import io.github.cumsauce.stalker.config.StalkerConfig;
+import io.github.cumsauce.stalker.net.Net;
+import io.github.cumsauce.stalker.world.StalkerManager;
 import net.fabricmc.api.ModInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +18,11 @@ public final class Stalker implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		StalkerConfig.load();
+		Net.register();
+		StalkerManager.initialize();
+		BribeInteract.initialize();
+		StalkerCommands.initialize();
 		LOGGER.info("Stalker initialized");
 	}
 }

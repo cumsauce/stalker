@@ -1,0 +1,107 @@
+package io.github.cumsauce.stalker.world;
+
+import java.util.Optional;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * The 48-candidate cover search (plan §3): 16 compass directions × radii
+ * {4, 7, 10}, each tried over a ±3 block Y spread. A candidate is cover when
+ * the player's eye cannot see the candidate's eye position (clip blocked) and
+ * the block below is solid. Score = distance from villager + weight ×
+ * distance from player; the lowest score wins. Static and side-effect free;
+ * throttling (one search per 2 s per villager) is the caller's job.
+ */
+public final class CoverSearch {
+
+	/** Radii searched around the villager, per the plan. */
+	public static final int[] RADII = {4, 7, 10};
+
+	/** Y offsets tried per horizontal candidate (±3, top-down so high ground wins ties). */
+	public static final int[] Y_SPREAD = {0, 1, 2, 3, -1, -2, -3};
+
+	/** Number of compass directions. */
+	public static final int DIRECTIONS = 16;
+
+	/** Weight of the player-distance term in the score (plan §3). */
+	public static final double PLAYER_DISTANCE_WEIGHT = 0.5;
+
+	private CoverSearch() {
+	}
+
+	/**
+	 * Finds the best cover point for a villager fleeing a player, using the
+	 * plan defaults (radii {4, 7, 10}, ±3 Y, weight 0.5).
+	 *
+	 * @return the chosen cover block position, or empty when nothing qualifies
+	 *         (the caller then freezes and acts normal).
+	 */
+	public static Optional<BlockPos> findCover(ServerLevel level, Vec3 villagerPos, Vec3 playerEye) {
+		return search(level, villagerPos, playerEye, RADII, Y_SPREAD, PLAYER_DISTANCE_WEIGHT, true);
+	}
+
+	/**
+	 * Relocation-flavoured search (plan §7): finds an out-of-sight point in a
+	 * ring {@code [minRadius, maxRadius]} around an anchor (the player), with
+	 * no villager-distance term. Returns empty if no LOS-blocked point exists.
+	 */
+	public static Optional<BlockPos> findRelocationPoint(ServerLevel level, Vec3 anchor, int minRadius, int maxRadius) {
+		int[] radii = {minRadius, (minRadius + maxRadius) / 2, maxRadius};
+		return search(level, anchor, anchor, radii, Y_SPREAD, 0.0, false);
+	}
+
+	/**
+	 * The search core. {@code fleeWeighted} adds the distance-from-anchor
+	 * (player) term to the score when true; otherwise score is distance from
+	 * the ring centre only.
+	 *
+	 * @param centre   the position the ring of candidates surrounds
+	 * @param viewerEye the eye the candidates must be hidden from
+	 */
+	public static Optional<BlockPos> search(ServerLevel level, Vec3 centre, Vec3 viewerEye, int[] radii, int[] ySpread, double fleeWeight, boolean fleeWeighted) {
+		Optional<BlockPos> best = Optional.empty();
+		double bestScore = Double.MAX_VALUE;
+		for (int i = 0; i < DIRECTIONS; i++) {
+			double angle = (Math.PI * 2.0 * i) / DIRECTIONS;
+			double dx = Math.cos(angle);
+			double dz = Math.sin(angle);
+			for (int radius : radii) {
+				double cx = centre.x + dx * radius;
+				double cz = centre.z + dz * radius;
+				int x = BlockPos.containing(cx, 0.0, cz).getX();
+				int z = BlockPos.containing(cx, 0.0, cz).getZ();
+				for (int dy : ySpread) {
+					BlockPos pos = new BlockPos(x, BlockPos.containing(0.0, centre.y, 0.0).getY() + dy, z);
+					if (!isCover(level, pos, viewerEye)) {
+						continue;
+					}
+					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
+					double score = center.distanceTo(centre)
+						+ (fleeWeighted ? fleeWeight * center.distanceTo(viewerEye) : 0.0);
+					if (score < bestScore) {
+						bestScore = score;
+						best = Optional.of(pos);
+					}
+				}
+				// One horizontal candidate: the Y loop already picked its best spot;
+				// continue to the next radius.
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * A candidate is cover when the viewer's eye cannot see an eye placed at
+	 * the candidate position (clip blocked) and the block below is solid.
+	 */
+	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
+		BlockPos below = pos.below();
+		if (!level.getBlockState(below).isSolid()) {
+			return false;
+		}
+		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
+		return !Senses.canSee(level, viewerEye, candidateEye);
+	}
+}

@@ -2,6 +2,10 @@
 
 Draft, 2026-10-14. "Stalker" (mod id `stalker`) is a working name; renaming before the first push is cheap. Written to be executed milestone by milestone by GLM Flash — every number named here is a default, all of them live in one config file, and every milestone ends with a build, a test run and a manual checklist.
 
+## Status (2026-10-14)
+
+M0–M6 implemented in one pass (fan-out of four agents over the packages): skeleton, bindings/attachments, manager state machine + senses + cover, `StalkerBrain` activity + `registerBrainGoals` mixin, strikes/chase/stun + cues + strike-tell payload + client camera snap, bribes + commands + config, 13 unit tests. `./gradlew build` green; dedicated-server smoke test boots with no mixin errors (world-level manual checklists below still pending). Remaining: M7 (server game tests), entity-removal event wiring (`StalkerManager.onVillagerRemoved` is exposed but unhooked — an orphan fallback clock covers it), localization (`en_us.json`), debug particles, and the in-game milestone checklists. Toolchain note: this machine needs `export JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home`.
+
 ## Goal
 
 A server-side Fabric mod for Minecraft 26.3 (the same toolchain as earshot: loader 0.19.5, Fabric API 0.162.0+26.3, loom 1.18.2, Gradle 9.7.1, Java 25, Mojang mappings, plain Java) in which a random nearby villager silently fixates on a player and begins following them. It keeps its distance, hides behind trees and walls, peeks out to watch, and goes still when spotted. If it reaches you from behind it "gets" you: mostly a music sting with blindness and poison while it closes in and keeps hitting you; rarely it snatches you away, teleporting you a hundred blocks from where you stood. You can pay it off — what counts as payment depends on its profession, and a payment it doesn't value is fatal. Survive its nine-second chase and it collapses, dazed, and you can break away for good.
