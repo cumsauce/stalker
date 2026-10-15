@@ -1,0 +1,23 @@
+{
+	"schemaVersion": 1,
+	"id": "stalker",
+	"version": "${version}",
+	"name": "Stalker",
+	"description": "A villager that follows you, watches you from cover, and sometimes gets you. Server side.",
+	"license": "MIT OR Apache-2.0",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"io.github.cumsauce.stalker.Stalker"
+		]
+	},
+	"mixins": [
+		"stalker.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
