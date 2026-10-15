@@ -90,10 +90,10 @@ public final class StalkerCommands {
 	}
 
 	private static String start(ServerPlayer player) {
-		return StalkerManager.bind(player)
+		String failure = StalkerManager.bindFailure(player);
+		return failure == null
 				? "Bound a stalker to " + player.getName().getString() + "."
-				: "Could not bind: no eligible villager nearby, or " + player.getName().getString()
-						+ " is already stalked.";
+				: "Could not bind: " + failure;
 	}
 
 	private static String stop(ServerPlayer player) {

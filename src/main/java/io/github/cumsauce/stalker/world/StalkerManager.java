@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
 import io.github.cumsauce.stalker.config.StalkerConfig;
+import io.github.cumsauce.stalker.world.BindingRules.Owner;
 import io.github.cumsauce.stalker.sound.Cues;
 import io.github.cumsauce.stalker.strike.Strikes;
 
@@ -611,11 +612,89 @@ public final class StalkerManager {
 		return true;
 	}
 
-	/** Eligibility per plan §1: adult, unbound, not blacklisted. Range and dimension checked by the caller. */
+	/**
+	 * Eligibility per plan §1: adult, unbound, not blacklisted. Range and dimension checked by the caller.
+	 *
+	 * <p>A one-sided binding — {@code STALKED_BY} set on a villager whose player no longer claims it
+	 * back (left over from an older save, an interrupted teardown, or a deleted player) — would
+	 * otherwise make the villager ineligible forever, since nothing else clears it. That is treated
+	 * as unbound and healed here.
+	 */
 	private static boolean isEligible(ServerLevel level, ServerPlayer player, Villager villager) {
-		return !villager.isBaby()
-			&& !Attachments.isBound(villager)
-			&& !Attachments.isBlacklisted(level, player, villager.getUUID());
+		boolean isBound = Attachments.isBound(villager);
+		Owner owner = isBound ? ownerState(level, villager) : Owner.UNKNOWN;
+		// A stale one-sided binding is healed rather than left to make the villager ineligible forever.
+		if (isBound && !BindingRules.bindingIsLive(owner)) {
+			Attachments.unbindVillager(villager);
+		}
+		return BindingRules.isEligible(villager.isBaby(), isBound,
+			owner, Attachments.isBlacklisted(level, player, villager.getUUID()));
+	}
+
+	/**
+	 * What the villager's recorded owner looks like: gone (UNKNOWN), offline (binding kept, plan §7),
+	 * online and claiming it back, or online but no longer pointing at it (stale).
+	 */
+	private static Owner ownerState(ServerLevel level, Villager villager) {
+		UUID ownerId = Attachments.boundPlayer(villager).orElse(null);
+		if (ownerId == null) {
+			return Owner.UNKNOWN;
+		}
+		ServerPlayer owner = level.getServer().getPlayerList().getPlayer(ownerId);
+		if (owner == null) {
+			return Owner.OFFLINE;
+		}
+		return Attachments.boundVillager(owner).filter(villager.getUUID()::equals).isPresent()
+			? Owner.CLAIMS_BACK
+			: Owner.DISOWNED;
+	}
+
+	/**
+	 * Attempts a bind, returning null on success or a short reason on failure — the reason is what
+	 * makes {@code /stalker start} diagnosable in game.
+	 */
+	public static String bindFailure(ServerPlayer player) {
+		if (Attachments.boundVillager(player).isPresent()) {
+			return player.getName().getString() + " is already stalked.";
+		}
+		if (player.isCreative() || player.isSpectator()) {
+			return "creative/spectator players are never bound.";
+		}
+		if (!(player.level() instanceof ServerLevel level)) {
+			return "the player is not in a server level.";
+		}
+		StalkerConfig c = StalkerConfig.get();
+		int adults = 0;
+		int bound = 0;
+		int blacklisted = 0;
+		Villager best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (Villager villager : level.getEntitiesOfClass(Villager.class,
+				player.getBoundingBox().inflate(c.bindMaxDistance()))) {
+			if (villager.isBaby()) {
+				continue;
+			}
+			adults++;
+			if (Attachments.isBound(villager) && BindingRules.bindingIsLive(ownerState(level, villager))) {
+				bound++;
+				continue;
+			}
+			if (Attachments.isBlacklisted(level, player, villager.getUUID())) {
+				blacklisted++;
+				continue;
+			}
+			double dist = villager.distanceTo(player);
+			if (dist < bestDist) {
+				bestDist = dist;
+				best = villager;
+			}
+		}
+		if (best == null) {
+			return "no eligible villager within " + (int) c.bindMaxDistance() + " blocks (found " + adults
+					+ " adult(s): " + bound + " already bound, " + blacklisted + " blacklisted).";
+		}
+		performBind(level, best, player);
+		return null;
 	}
 
 	/** Executes a bind: attachments, persistence, dismount, brain stop, state. */
@@ -662,13 +741,17 @@ public final class StalkerManager {
 	 */
 	public static void unbind(ServerPlayer player, boolean blacklist) {
 		State state = STATES.remove(player.getUUID());
-		if (blacklist && state != null && player.level() instanceof ServerLevel blacklistLevel) {
-			Attachments.blacklist(blacklistLevel, player, state.villagerId, StalkerConfig.get().blacklistTicks());
+		// The villager UUID comes from the state, falling back to the player-side attachment: after a
+		// reload the state is rebuilt lazily, so /stalker stop on a fresh session would otherwise
+		// clear only the player's side and leave the villager bound (and ineligible) forever.
+		UUID villagerId = state != null ? state.villagerId : Attachments.boundVillager(player).orElse(null);
+		if (blacklist && villagerId != null && player.level() instanceof ServerLevel blacklistLevel) {
+			Attachments.blacklist(blacklistLevel, player, villagerId, StalkerConfig.get().blacklistTicks());
 		}
 		Attachments.unbindPlayer(player);
 		Strikes.clear(player);
-		if (state != null && player.level() instanceof ServerLevel level) {
-			if (level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
+		if (villagerId != null && player.level() instanceof ServerLevel level) {
+			if (level.getEntityInAnyDimension(villagerId) instanceof Villager villager) {
 				Attachments.unbindVillager(villager);
 				StalkerBrain.release(villager);
 			}
