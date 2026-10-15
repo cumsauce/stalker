@@ -2,6 +2,7 @@ package io.github.cumsauce.stalker.sound;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+import io.github.cumsauce.stalker.config.StalkerConfig;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -19,6 +20,11 @@ public final class Cues {
 	private Cues() {
 	}
 
+	/** The volumes below are the plan §5 defaults, read live so /stalker reload takes effect. */
+	private static StalkerConfig cfg() {
+		return StalkerConfig.get();
+	}
+
 	private static void play(Level level, Vec3 at, SoundEvent sound, SoundSource source, float volume, float pitch) {
 		level.playSound(null, at.x, at.y, at.z, sound, source, volume, pitch);
 	}
@@ -26,12 +32,12 @@ public final class Cues {
 	/** Stalking mumble: {@code entity.villager.ambient}, pitch 0.5–0.6, volume 0.25. */
 	public static void stalkingMumble(Villager villager) {
 		float pitch = 0.5f + ThreadLocalRandom.current().nextFloat() * 0.1f;
-		play(villager.level(), villager.position(), SoundEvents.VILLAGER_AMBIENT, SoundSource.NEUTRAL, 0.25f, pitch);
+		play(villager.level(), villager.position(), SoundEvents.VILLAGER_AMBIENT, SoundSource.NEUTRAL, (float) cfg().mumbleVolume(), pitch);
 	}
 
 	/** Stalking footstep: {@code block.grass.step}, pitch 1.0, volume 0.6. */
 	public static void footstep(Villager villager) {
-		play(villager.level(), villager.position(), SoundEvents.GRASS_STEP, SoundSource.NEUTRAL, 0.6f, 1.0f);
+		play(villager.level(), villager.position(), SoundEvents.GRASS_STEP, SoundSource.NEUTRAL, (float) cfg().footstepVolume(), 1.0f);
 	}
 
 	/** Spotted dash: {@code block.grass.step} ×2, pitch 1.2, volume 0.7. */
@@ -43,7 +49,7 @@ public final class Cues {
 
 	/** Chase heartbeat: {@code entity.warden.heartbeat}, pitch 1.0, volume 0.8. */
 	public static void chaseHeartbeat(Villager villager) {
-		play(villager.level(), villager.position(), SoundEvents.WARDEN_HEARTBEAT, SoundSource.HOSTILE, 0.8f, 1.0f);
+		play(villager.level(), villager.position(), SoundEvents.WARDEN_HEARTBEAT, SoundSource.HOSTILE, (float) cfg().chaseHeartbeatVolume(), 1.0f);
 	}
 
 	/** Strike tell sting: {@code entity.enderman.scream} pitch 0.65 + {@code entity.warden.heartbeat}, volume 1.0. */

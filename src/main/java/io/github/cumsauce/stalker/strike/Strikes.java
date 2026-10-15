@@ -37,8 +37,6 @@ public final class Strikes {
 	private static final int TELL_SNAP_TICKS = 12;
 	/** DARKNESS length for the snatch variant (§4, no tuning key). */
 	private static final int SNATCH_DARKNESS_TICKS = 60;
-	/** Chase heartbeat cadence (§5, no tuning key). */
-	private static final int HEARTBEAT_INTERVAL_TICKS = 30;
 	/** NAUSEA length during the stun (§4, no tuning key). */
 	private static final int STUN_NAUSEA_TICKS = 100;
 	/** How often the dazed villager picks a new slow look target while stunned. */
@@ -115,6 +113,14 @@ public final class Strikes {
 			}
 		}
 
+		// If no attempt found a loaded, above-bottom column, do not fling the player into the void:
+		// keep them where they are.
+		if (!level.hasChunkAt(BlockPos.containing(x, y, z)) || surfaceY <= level.getMinY()) {
+			x = player.getX();
+			y = player.getY();
+			z = player.getZ();
+		}
+
 		Vec3 from = player.position();
 		// Absolute position, keep the player's current rotation, no camera reset.
 		player.teleportTo(level, x, y, z, Set.of(), player.getYRot(), player.getXRot(), false);
@@ -142,13 +148,6 @@ public final class Strikes {
 		StalkerConfig cfg = StalkerConfig.get();
 		ChaseState state = CHASE.computeIfAbsent(player.getUUID(), id -> new ChaseState());
 
-		if (player.isDeadOrDying()) {
-			CHASE.remove(player.getUUID());
-			Cues.playerDied(villager);
-			StalkerManager.blacklistAfterSuccess(player);
-			return;
-		}
-
 		// Prefer the point 1.5 blocks behind the player (position minus look).
 		Vec3 behind = player.position().subtract(player.getLookAngle().scale(1.5));
 		StalkerBrain.setTarget(villager, behind, (float) cfg.chaseSpeed());
@@ -165,7 +164,7 @@ public final class Strikes {
 			hit(villager, player, state.hits);
 		}
 
-		if (state.ticks % HEARTBEAT_INTERVAL_TICKS == 0) {
+		if (state.ticks % Math.max(1, cfg.chaseHeartbeatIntervalTicks()) == 0) {
 			Cues.chaseHeartbeat(villager);
 		}
 
@@ -188,8 +187,8 @@ public final class Strikes {
 		player.addEffect(new MobEffectInstance(MobEffects.POISON, cfg.poisonDurationTicks(), amp));
 	}
 
-	/** Starts the stun: 160-tick freeze with NAUSEA and slow random looks. Manager sets the phase. */
-	private static void stun(Villager villager, ServerPlayer player) {
+	/** Starts the stun: NAUSEA, freeze, stun cue. Called by the manager's CHASE->STUN edge. */
+	public static void stun(Villager villager, ServerPlayer player) {
 		STUN.put(player.getUUID(), new StunState());
 		player.addEffect(new MobEffectInstance(MobEffects.NAUSEA, STUN_NAUSEA_TICKS));
 		villager.getNavigation().stop();

@@ -152,6 +152,19 @@ public final class StalkerBrain {
 	}
 
 	/**
+	 * Drops a villager out of the stalker entirely and hands it back to vanilla behavior: clears the
+	 * movement memories and pose, and re-applies the schedule so STALKING stops being the active
+	 * activity. {@link #setTarget} alone is not enough — the CORE assert task latches STALKING as the
+	 * active activity, and with no IDLE/WORK behaviors running the villager would stand inert rather
+	 * than resume wandering. Called on every teardown path.
+	 */
+	public static void release(Villager villager) {
+		setTarget(villager, null, 0.0F);
+		villager.setPose(Pose.STANDING);
+		villager.getBrain().useDefaultActivity();
+	}
+
+	/**
 	 * True while the villager's brain has the STALKING entry requirement satisfiable, i.e. it is
 	 * currently managed by a stalker binding. Used by silence/interaction checks.
 	 */
@@ -170,11 +183,16 @@ public final class StalkerBrain {
 	/**
 	 * Re-asserts the STALKING activity every tick while the target memory is present. Lives in the
 	 * CORE package so it ticks regardless of which non-core activity is active.
+	 *
+	 * <p>It must not out-rank the villager's own survival activities: a bound villager still has to
+	 * flee zombies and fire, so while PANIC or RAID is active this leaves the brain alone. It also
+	 * uses the maximum duration (like {@link MoveTargetTask}) so it runs every tick, not for a fixed
+	 * 60-tick spell with a one-tick gap.
 	 */
 	private static final class AssertStalkingTask extends Behavior<Villager> {
 
 		AssertStalkingTask() {
-			super(Map.of());
+			super(Map.of(), Integer.MAX_VALUE);
 		}
 
 		@Override
@@ -184,8 +202,13 @@ public final class StalkerBrain {
 
 		@Override
 		protected void tick(ServerLevel level, Villager villager, long timestamp) {
-			if (villager.getBrain().hasMemoryValue(STALKING_TARGET) && !villager.getBrain().isActive(STALKING)) {
-				villager.getBrain().setActiveActivityIfPossible(STALKING);
+			var brain = villager.getBrain();
+			// Never override the villager's own panic/raid response (vanilla PANIC/RAID behaviours).
+			if (brain.isActive(Activity.PANIC) || brain.isActive(Activity.RAID)) {
+				return;
+			}
+			if (brain.hasMemoryValue(STALKING_TARGET) && !brain.isActive(STALKING)) {
+				brain.setActiveActivityIfPossible(STALKING);
 			}
 		}
 	}

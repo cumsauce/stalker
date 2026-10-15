@@ -96,21 +96,30 @@ public final class Attachments {
 
 	/** True if this villager may not stalk this player yet (blacklist active). */
 	public static boolean isBlacklisted(ServerLevel level, ServerPlayer player, UUID villagerId) {
-		Long expiry = player.getAttached(BLACKLIST).get(villagerId);
+		Map<UUID, Long> blacklist = player.getAttached(BLACKLIST);
+		if (blacklist == null) {
+			return false;
+		}
+		Long expiry = blacklist.get(villagerId);
 		return expiry != null && expiry > level.getGameTime();
 	}
 
 	/** Blacklists the pair for the given duration from now. */
 	public static void blacklist(ServerLevel level, ServerPlayer player, UUID villagerId, long durationTicks) {
-		player.modifyAttached(BLACKLIST, map -> {
-			map.put(villagerId, level.getGameTime() + durationTicks);
-			return map;
-		});
+		// getAttached never runs the type's initializer (only getAttachedOrCreate does), so the map
+		// must be created on demand; setAttached afterwards so the change is marked and saved.
+		Map<UUID, Long> blacklist = player.getAttachedOrCreate(BLACKLIST);
+		blacklist.put(villagerId, level.getGameTime() + durationTicks);
+		player.setAttached(BLACKLIST, blacklist);
 	}
 
 	/** Remaining blacklist ticks for the pair, 0 if none. */
 	public static long blacklistRemaining(ServerLevel level, ServerPlayer player, UUID villagerId) {
-		Long expiry = player.getAttached(BLACKLIST).get(villagerId);
+		Map<UUID, Long> blacklist = player.getAttached(BLACKLIST);
+		if (blacklist == null) {
+			return 0L;
+		}
+		Long expiry = blacklist.get(villagerId);
 		return expiry == null ? 0L : Math.max(0L, expiry - level.getGameTime());
 	}
 }

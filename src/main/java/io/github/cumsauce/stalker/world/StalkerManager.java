@@ -16,6 +16,7 @@ import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
 import io.github.cumsauce.stalker.config.StalkerConfig;
 import io.github.cumsauce.stalker.sound.Cues;
@@ -99,6 +100,14 @@ public final class StalkerManager {
 		initialized = true;
 		// 26.3 Fabric renamed END_WORLD_TICK to END_LEVEL_TICK (same callback shape).
 		ServerTickEvents.END_LEVEL_TICK.register(StalkerManager::tickLevel);
+		// Drop per-player bookkeeping when a player leaves: the tick loop only sees online players,
+		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever.
+		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			ServerPlayer player = handler.getPlayer();
+			if (player != null) {
+				Strikes.clear(player);
+			}
+		});
 	}
 
 	// ------------------------------------------------------------------ tick
@@ -196,7 +205,7 @@ public final class StalkerManager {
 			case STUN -> tickStun(level, player, villager, state, c, distance);
 		}
 
-		tickCues(villager, player, state, distance);
+		tickCues(villager, player, state, distance, c);
 	}
 
 	// ---------------------------------------------------------------- STALK
@@ -383,15 +392,16 @@ public final class StalkerManager {
 			state.phase = Phases.Phase.STUN;
 			state.stunTicks = c.stunDurationTicks();
 			state.chaseTicks = 0;
-			Cues.stun(villager);
+			// Applies the stun: NAUSEA, navigation stop, target clear, stun cue (plan §4).
+			Strikes.stun(villager, player);
 		}
 	}
 
 	private static void tickStun(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
-		// Escape window: player > escape distance → unbind + blacklist (plan §4).
+		// Escape window: player > escape distance → unbind + blacklist (plan §4). The villager side
+		// must be cleared too, or STALKED_BY stays set and the villager can never bind again.
 		if (distance > c.stunEscapeDistance()) {
-			dropBinding(level, player, state, true, false);
-			StalkerBrain.setTarget(villager, null, 0.0F);
+			dropBinding(level, player, state, true, true);
 			return;
 		}
 		Strikes.tickStun(villager, player);
@@ -406,7 +416,7 @@ public final class StalkerManager {
 
 	// ------------------------------------------------------------------ cues
 
-	private static void tickCues(Villager villager, ServerPlayer player, State state, double distance) {
+	private static void tickCues(Villager villager, ServerPlayer player, State state, double distance, StalkerConfig c) {
 		if (state.phase != Phases.Phase.STALK && state.phase != Phases.Phase.COVER) {
 			return;
 		}
@@ -416,14 +426,15 @@ public final class StalkerManager {
 			if (distance <= 32.0) {
 				Cues.stalkingMumble(villager);
 			}
-			state.mumbleCooldown = 600 + villager.getRandom().nextInt(801);
+			int span = Math.max(1, c.mumbleMaxIntervalTicks() - c.mumbleMinIntervalTicks() + 1);
+			state.mumbleCooldown = c.mumbleMinIntervalTicks() + villager.getRandom().nextInt(span);
 		}
 		if (state.footstepCooldown > 0) {
 			state.footstepCooldown--;
-		} else if (state.lastTarget != null && distance >= 8.0 && distance <= 20.0
+		} else if (state.lastTarget != null && distance >= c.footstepMinDistance() && distance <= c.footstepMaxDistance()
 			&& !Senses.canSee(player.level(), player, villager)) {
 			Cues.footstep(villager);
-			state.footstepCooldown = 100;
+			state.footstepCooldown = c.footstepIntervalTicks();
 		}
 	}
 
@@ -659,8 +670,7 @@ public final class StalkerManager {
 		if (state != null && player.level() instanceof ServerLevel level) {
 			if (level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 				Attachments.unbindVillager(villager);
-				villager.setPose(Pose.STANDING);
-				StalkerBrain.setTarget(villager, null, 0.0F);
+				StalkerBrain.release(villager);
 			}
 		}
 	}
@@ -705,6 +715,10 @@ public final class StalkerManager {
 		}
 		if (phase == Phases.Phase.CHASE) {
 			state.chaseTicks = 0;
+			// The chase timer is the blindness effect (plan §4); without it the next tick flips
+			// straight to STUN and the forced chase is never observable.
+			player.addEffect(new net.minecraft.world.effect.MobEffectInstance(
+				net.minecraft.world.effect.MobEffects.BLINDNESS, StalkerConfig.get().chaseDurationTicks()));
 		}
 		if (phase == Phases.Phase.STALK || phase == Phases.Phase.COVER) {
 			state.strikeCooldown = 0;
@@ -723,6 +737,11 @@ public final class StalkerManager {
 	public static void forceStrike(ServerPlayer player) {
 		State state = STATES.get(player.getUUID());
 		if (state == null || !(player.level() instanceof ServerLevel level)) {
+			return;
+		}
+		// Ignore while already chasing/stunned: a delayed pretend-bribe must not re-strike mid-chase
+		// (re-rolling the variant and restarting the timer). /stalker strike from STALK/COVER still works.
+		if (state.phase == Phases.Phase.CHASE || state.phase == Phases.Phase.STUN) {
 			return;
 		}
 		if (level.getEntity(state.villagerId) instanceof Villager villager) {
@@ -810,8 +829,7 @@ public final class StalkerManager {
 		Strikes.clear(player);
 		if (villagerSide && level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 			Attachments.unbindVillager(villager);
-			villager.setPose(Pose.STANDING);
-			StalkerBrain.setTarget(villager, null, 0.0F);
+			StalkerBrain.release(villager);
 		}
 	}
 
@@ -822,6 +840,9 @@ public final class StalkerManager {
 		if (state != null && player.level() instanceof ServerLevel level
 			&& level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 			Attachments.unbindVillager(villager);
+			// Hand it back to vanilla: clear the move memories/pose and drop STALKING, or it stands
+			// inert (the memories are serialised into the brain NBT and would survive a reload).
+			StalkerBrain.release(villager);
 		}
 	}
 

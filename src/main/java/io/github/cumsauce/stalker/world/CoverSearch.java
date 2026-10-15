@@ -94,14 +94,25 @@ public final class CoverSearch {
 
 	/**
 	 * A candidate is cover when the viewer's eye cannot see an eye placed at
-	 * the candidate position (clip blocked) and the block below is solid.
+	 * the candidate position (clip blocked), the block below is solid, and the
+	 * candidate cell is actually standable. Without the passability test a block
+	 * buried in a wall counts as cover (the clip to an eye inside the wall is
+	 * blocked and the block below is solid), so the villager paths into a wall.
 	 */
 	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
 		BlockPos below = pos.below();
 		if (!level.getBlockState(below).isSolid()) {
 			return false;
 		}
+		if (!isPassable(level, pos) || !isPassable(level, pos.above())) {
+			return false;
+		}
 		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
 		return !Senses.canSee(level, viewerEye, candidateEye);
+	}
+
+	/** True when a villager can stand in this cell (no collision). */
+	private static boolean isPassable(ServerLevel level, BlockPos pos) {
+		return level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
 	}
 }
