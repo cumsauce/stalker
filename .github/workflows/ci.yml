@@ -1,0 +1,68 @@
+name: CI
+
+# Modelled on earshot's, minus everything Rust: Stalker is pure Java, so one
+# job builds the jar and runs the unit tests. Server game tests (M7) join here
+# once they exist — they run with `./gradlew runGameTest` on a server, no Xvfb.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Actions from outside GitHub's own `actions/` are pinned to a commit, since
+# a tag can be moved to other code; the comment names the release it was.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - run: ./gradlew build
+      - name: Check the jar
+        run: |
+          jar=$(ls build/libs/stalker-*.jar)
+          unzip -l "$jar" | tee contents
+          for entry in fabric.mod.json stalker.mixins.json; do
+            grep -q " $entry\$" contents || { echo "$jar has no $entry" >&2; exit 1; }
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: stalker-mod
+          path: build/libs/stalker-*.jar
+
+  # On a version tag: a GitHub prerelease with the jar.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: stalker-mod
+          path: dist
+      - name: GitHub release
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          test -f "dist/stalker-$version.jar" || { echo "tag $GITHUB_REF_NAME, but built $(ls dist)" >&2; exit 1; }
+          flags=(--generate-notes)
+          if [[ $version == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" "dist/stalker-$version.jar"
