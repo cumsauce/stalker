@@ -1,4 +1,4 @@
-[22:22:45] [Test worker/WARN]: Couldn't read /var/folders/tb/8d_73tkx5hndlyfwjng3srp80000gn/T/junit-850468730939822353/stalker.json, so Stalker uses its default settings
+[22:37:19] [Test worker/WARN]: Couldn't read /var/folders/tb/8d_73tkx5hndlyfwjng3srp80000gn/T/junit-5867558637181885591/stalker.json, so Stalker uses its default settings
 com.google.gson.JsonSyntaxException: com.google.gson.stream.MalformedJsonException: Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON at line 1 column 6 path $
 See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json
 	at com.google.gson.JsonParser.parseReader(JsonParser.java:116)

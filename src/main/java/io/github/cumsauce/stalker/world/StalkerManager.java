@@ -142,11 +142,10 @@ public final class StalkerManager {
 			return;
 		}
 
-		// Creative/spectator cause instant unbind, no blacklist (plan §7).
+		// Creative/spectator cause instant unbind, no blacklist (plan §7). The villager side must
+		// be cleared too, or STALKED_BY stays set and the villager can never bind again.
 		if (player.isCreative() || player.isSpectator()) {
-			dropBinding(level, player, state, false, false);
-			StalkerBrain.setTarget(villager, null, 0.0F);
-			villager.setPose(Pose.STANDING);
+			dropBinding(level, player, state, false, true);
 			return;
 		}
 
@@ -254,6 +253,9 @@ public final class StalkerManager {
 		state.freezeTicks = 0;
 		state.peekCooldown = state.peekCooldown <= 0 ? 140 + level.getRandom().nextInt(121) : state.peekCooldown;
 		state.coverPos = null;
+		// A dash for cover is urgent: bypass the routine search throttle, otherwise a spotted
+		// villager inside the cooldown window finds nothing and falls through to the freeze.
+		state.coverSearchCooldown = 0;
 		Cues.dashForCover(villager);
 		findCoverNow(level, player, villager, state, c);
 	}
@@ -619,18 +621,40 @@ public final class StalkerManager {
 		if (Attachments.boundVillager(player).isPresent()) {
 			return false;
 		}
+		// Creative/spectator players are never bound (plan §7). Without this, /stalker start on a
+		// creative player binds and is dropped again the next tick, orphaning the villager's side.
+		if (player.isCreative() || player.isSpectator()) {
+			return false;
+		}
 		if (!(player.level() instanceof ServerLevel level)) {
 			return false;
 		}
 		return tryBindNearest(level, player, StalkerConfig.get());
 	}
 
-	/** Clears the player's binding (/stalker stop). */
+	/** Clears the player's binding (/stalker stop), without blacklisting. */
 	public static void unbind(ServerPlayer player) {
+		unbind(player, false);
+	}
+
+	/**
+	 * Clears the player's binding. {@code blacklist} writes the 10-minute immunity for the pair
+	 * (plan §1/§4/§6: it got what it wanted).
+	 *
+	 * <p>Callers that both unbind and blacklist must use this one method: doing
+	 * {@code unbind(player); blacklistAfterSuccess(player);} does not work, because the first call
+	 * removes the state and the player-side attachment that the second one reads the villager UUID from.
+	 */
+	public static void unbind(ServerPlayer player, boolean blacklist) {
 		State state = STATES.remove(player.getUUID());
+		if (blacklist && state != null && player.level() instanceof ServerLevel blacklistLevel) {
+			Attachments.blacklist(blacklistLevel, player, state.villagerId, StalkerConfig.get().blacklistTicks());
+		}
 		Attachments.unbindPlayer(player);
+		Strikes.clear(player);
+		DEBUG_PLAYERS.remove(player.getUUID());
 		if (state != null && player.level() instanceof ServerLevel level) {
-			if (level.getEntity(state.villagerId) instanceof Villager villager) {
+			if (level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 				Attachments.unbindVillager(villager);
 				villager.setPose(Pose.STANDING);
 				StalkerBrain.setTarget(villager, null, 0.0F);
@@ -745,22 +769,7 @@ public final class StalkerManager {
 	 * immunity). No-op when unbound.
 	 */
 	public static void blacklistAfterSuccess(ServerPlayer player) {
-		if (!(player.level() instanceof ServerLevel level)) {
-			return;
-		}
-		State state = STATES.remove(player.getUUID());
-		UUID villagerId = state != null ? state.villagerId
-			: Attachments.boundVillager(player).orElse(null);
-		Attachments.unbindPlayer(player);
-		if (villagerId == null) {
-			return;
-		}
-		Attachments.blacklist(level, player, villagerId, StalkerConfig.get().blacklistTicks());
-		if (level.getEntityInAnyDimension(villagerId) instanceof Villager villager) {
-			Attachments.unbindVillager(villager);
-			villager.setPose(Pose.STANDING);
-			StalkerBrain.setTarget(villager, null, 0.0F);
-		}
+		unbind(player, true);
 	}
 
 	/** Applies the 5-second post-stun strike cooldown; called by Strikes (plan §4). */
@@ -795,14 +804,18 @@ public final class StalkerManager {
 			Attachments.blacklist(level, player, state.villagerId, StalkerConfig.get().blacklistTicks());
 		}
 		Attachments.unbindPlayer(player);
-		if (villagerSide && level.getEntity(state.villagerId) instanceof Villager villager) {
+		Strikes.clear(player);
+		if (villagerSide && level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 			Attachments.unbindVillager(villager);
+			villager.setPose(Pose.STANDING);
+			StalkerBrain.setTarget(villager, null, 0.0F);
 		}
 	}
 
 	private static void dropVillagerSide(ServerPlayer player) {
 		State state = STATES.remove(player.getUUID());
 		Attachments.unbindPlayer(player);
+		Strikes.clear(player);
 		if (state != null && player.level() instanceof ServerLevel level
 			&& level.getEntityInAnyDimension(state.villagerId) instanceof Villager villager) {
 			Attachments.unbindVillager(villager);
@@ -812,6 +825,7 @@ public final class StalkerManager {
 	private static void dropPlayerSide(ServerPlayer player) {
 		STATES.remove(player.getUUID());
 		Attachments.unbindPlayer(player);
+		Strikes.clear(player);
 	}
 
 	private static String professionName(Villager villager) {

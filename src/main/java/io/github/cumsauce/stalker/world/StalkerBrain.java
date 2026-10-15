@@ -227,14 +227,17 @@ public final class StalkerBrain {
 				return;
 			}
 			PathNavigation navigation = villager.getNavigation();
+			// Repath only when the target moved (or on the first tick). Do NOT test navigation.isDone():
+			// that is true every tick once a path finishes, which turned this into a full A* pathfind
+			// per brain tick. The manager already re-issues the target every 10 ticks when it moves.
 			boolean stale = this.lastPathedTarget == null
-				|| navigation.isDone()
 				|| this.lastPathedTarget.distanceToSqr(target) > REPATH_DISTANCE_SQR;
 			if (stale) {
 				float speed = villager.getBrain().getMemory(STALKING_SPEED).orElse(1.0F);
-				if (navigation.moveTo(target.x, target.y, target.z, speed)) {
-					this.lastPathedTarget = target;
-				}
+				navigation.moveTo(target.x, target.y, target.z, speed);
+				// Remember the attempt even when no path is found, so an unreachable target does not
+				// re-run the pathfinder every tick.
+				this.lastPathedTarget = target;
 			}
 		}
 

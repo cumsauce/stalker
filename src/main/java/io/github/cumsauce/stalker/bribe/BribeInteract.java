@@ -62,7 +62,8 @@ public final class BribeInteract {
 		// Identical sounds either way — that is the deception (PLAN.md section 5/6).
 		Cues.bribeAccepted(villager);
 		if (BribeTables.accepts(villager, offered)) {
-			StalkerManager.unbind(clicked);
+			// Accept: unbind AND blacklist (plan §6 — it got what it wanted, 10-minute immunity).
+			StalkerManager.blacklistAfterSuccess(clicked);
 			villager.getNavigation().moveTo(
 					villager.getX() + (villager.getRandom().nextDouble() - 0.5) * 32,
 					villager.getY(),

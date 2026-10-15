@@ -14,6 +14,7 @@ import io.github.cumsauce.stalker.world.StalkerBrain;
 import io.github.cumsauce.stalker.world.StalkerManager;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -94,22 +95,33 @@ public final class Strikes {
 		player.addEffect(new MobEffectInstance(MobEffects.DARKNESS, SNATCH_DARKNESS_TICKS));
 
 		// 100 ± 16 blocks horizontal, then land on the heightmap top, 0–teleportMaxLift up.
+		// getHeight returns the world bottom for an unloaded column, which would drop the player
+		// into bedrock or the void, so load the destination chunk first and keep the column inside
+		// the world border.
 		ThreadLocalRandom rng = ThreadLocalRandom.current();
-		double angle = rng.nextDouble() * Math.PI * 2.0;
-		double radius = cfg.teleportDistance() - 16.0 + rng.nextDouble() * 32.0;
-		double x = player.getX() + Math.cos(angle) * radius;
-		double z = player.getZ() + Math.sin(angle) * radius;
-		int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, Mth.floor(x), Mth.floor(z));
-		int lift = (int) (rng.nextDouble() * (cfg.teleportMaxLift() + 1.0));
-		double y = surfaceY + lift;
+		double x = 0;
+		double z = 0;
+		int surfaceY = level.getMinY();
+		double y = surfaceY + 1;
+		for (int attempt = 0; attempt < 8; attempt++) {
+			double angle = rng.nextDouble() * Math.PI * 2.0;
+			double radius = cfg.teleportDistance() - 16.0 + rng.nextDouble() * 32.0;
+			x = player.getX() + Math.cos(angle) * radius;
+			z = player.getZ() + Math.sin(angle) * radius;
+			surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, Mth.floor(x), Mth.floor(z));
+			y = surfaceY + (int) (rng.nextDouble() * (cfg.teleportMaxLift() + 1.0));
+			if (level.hasChunkAt(BlockPos.containing(x, y, z)) && surfaceY > level.getMinY()) {
+				break;
+			}
+		}
 
 		Vec3 from = player.position();
 		// Absolute position, keep the player's current rotation, no camera reset.
 		player.teleportTo(level, x, y, z, Set.of(), player.getYRot(), player.getXRot(), false);
 		Cues.snatchTeleport(level, from, new Vec3(x, y, z));
 
-		// It got what it wanted — the pair is done for 10 minutes.
-		StalkerManager.unbind(player);
+		// It got what it wanted — the pair is done for 10 minutes. One call: unbind() alone would
+		// clear the state and attachment the blacklist needs to read the villager UUID from.
 		StalkerManager.blacklistAfterSuccess(player);
 	}
 
@@ -133,7 +145,6 @@ public final class Strikes {
 		if (player.isDeadOrDying()) {
 			CHASE.remove(player.getUUID());
 			Cues.playerDied(villager);
-			StalkerManager.unbind(player);
 			StalkerManager.blacklistAfterSuccess(player);
 			return;
 		}
@@ -158,11 +169,11 @@ public final class Strikes {
 			Cues.chaseHeartbeat(villager);
 		}
 
-		// The blindness running out is the 9-second timer; surviving it dazes the villager.
+		// The CHASE->STUN edge is owned by StalkerManager.tickChase (it watches the blindness
+		// effect, which is the timer). Doing it here too played the stun cue twice, so this only
+		// drops the bookkeeping; the manager's setPhase arrives as the phase change.
 		if (state.ticks >= cfg.chaseDurationTicks()) {
 			CHASE.remove(player.getUUID());
-			stun(villager, player);
-			StalkerManager.setPhase(villager, Phases.Phase.STUN);
 		}
 	}
 
@@ -200,7 +211,6 @@ public final class Strikes {
 
 		if (player.distanceToSqr(villager) > cfg.stunEscapeDistance() * cfg.stunEscapeDistance()) {
 			STUN.remove(player.getUUID());
-			StalkerManager.unbind(player);
 			StalkerManager.blacklistAfterSuccess(player);
 			return;
 		}
