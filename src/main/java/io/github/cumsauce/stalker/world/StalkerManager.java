@@ -58,7 +58,6 @@ public final class StalkerManager {
 	private static final int STRIKE_COOLDOWN_AFTER_STUN = 100;
 
 	/** Spotted dash speed (plan §3). */
-	private static final float COVER_SPRINT_SPEED = 1.25F;
 
 	/** Closing speed (plan §2). */
 	private static final float STALK_SPEED = 1.0F;
@@ -80,6 +79,17 @@ public final class StalkerManager {
 
 	/** Ticks between stuck samples (plan §2 said 60; 40 reacts faster and still avoids false positives). */
 	private static final int STUCK_SAMPLE_TICKS = 40;
+
+	/** How long an "advance" decision stays committed before the unseen gate is re-evaluated.
+	 * Without this the gate flips tick by tick as the player's view sweeps, and the villager
+	 * starts and stops in bursts. */
+	private static final int APPROACH_COMMIT_TICKS = 30;
+
+	/** Fractions of the villager-to-player line used as staged approach points. */
+	private static final double[] APPROACH_FRACTIONS = {0.66, 0.45, 0.28};
+
+	/** Slower escape (was 1.25 — a full sprint): reads as scrambling, not teleporting. */
+	private static final float COVER_SPRINT_SPEED = 0.95F;
 
 	/** Ticks between pretend-normal idle glances (never at the player). */
 	private static final int NORMAL_LOOK_INTERVAL_TICKS = 40;
@@ -237,24 +247,39 @@ public final class StalkerManager {
 			return;
 		}
 
-		boolean unseen = isApproachAllowed(player, villager);
+		// Hysteresis on the unseen gate (plan §2): re-evaluated only when no advance is committed.
+		// Evaluating it every tick made the target flip between advance and hold as the player's
+		// view swept, and the villager moved in bursts.
+		if (state.spottedTicks > 0) {
+			// Being watched cancels a committed advance immediately.
+			state.advanceTicks = 0;
+		} else if (state.advanceTicks > 0) {
+			state.advanceTicks--;
+		} else if (isApproachAllowed(player, villager)) {
+			state.advanceTicks = APPROACH_COMMIT_TICKS;
+		}
+		boolean advancing = state.advanceTicks > 0;
+
 		Vec3 target;
 		if (distance > RELOCATE_DISTANCE || distance > 64.0) {
 			// > 64: close directly, stealth optional (catch-up).
 			target = player.position();
-		} else if (distance >= c.orbitOuter()) {
-			// 24–64: advance only when the player is looking away or blind to it.
-			target = unseen ? player.position() : null;
+		} else if (advancing) {
+			// Committed advance: stage through cover on the line to the player rather than
+			// beelining across open ground — the villager closes by hops between cover points.
+			target = findApproachStep(level, player, villager);
+			if (target == null) {
+				target = player.position();
+			}
 		} else if (distance >= c.orbitInner()) {
-			// 12–24: seek cover and watch; close only while unseen if no cover.
+			// Watched inside the orbit: seek cover and watch from it.
 			Optional<BlockPos> cover = ensureCover(level, player, villager, state, c);
 			target = cover
 				.map(pos -> Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5))
 				.filter(pos -> pos.distanceTo(villager.position()) > 2.0)
-				.orElseGet(() -> unseen ? player.position() : null);
+				.orElse(null);
 		} else {
-			// < 12: hold behind cover, or keep closing to strike range unseen.
-			target = unseen ? player.position() : null;
+			target = null;
 		}
 
 		// In view with nowhere to go: mill about like an ordinary villager instead of standing
@@ -265,6 +290,27 @@ public final class StalkerManager {
 		}
 
 		issueMovement(villager, state, target, STALK_SPEED);
+	}
+
+	/**
+	 * The next staged approach point on the line to the player: the farthest sample along the way
+	 * that has a standable, LOS-blocked spot near it. Returns null when no cover staging exists,
+	 * in which case the caller closes directly (it is unseen — a straight approach is fine).
+	 */
+	private static Vec3 findApproachStep(ServerLevel level, ServerPlayer player, Villager villager) {
+		Vec3 from = villager.position();
+		Vec3 to = player.position();
+		for (double fraction : APPROACH_FRACTIONS) {
+			Vec3 sample = from.lerp(to, fraction);
+			Optional<BlockPos> found = CoverSearch.findApproachPoint(level, sample, player.getEyePosition());
+			if (found.isPresent()) {
+				Vec3 point = Vec3.atLowerCornerOf(found.get()).add(0.5, 0.0, 0.5);
+				if (point.distanceTo(from) > 2.0 && point.distanceTo(to) < from.distanceTo(to)) {
+					return point;
+				}
+			}
+		}
+		return null;
 	}
 
 	/** Unseen-approach gate (plan §2): player looking away (dot ≤ 0.35) or LOS blocked. */
@@ -404,7 +450,7 @@ public final class StalkerManager {
 				Vec3 drift = villager.position().add(dir.scale(2.0 + level.getRandom().nextInt(3))).add(side);
 				state.normalWanderTarget = drift;
 				state.dashTicks = 0;
-				issueMovement(villager, state, drift, 0.7F);
+				issueMovement(villager, state, drift, 0.55F);
 			}
 		} else {
 			state.normalWanderTicks = NORMAL_WANDER_INTERVAL_TICKS;
@@ -1035,6 +1081,8 @@ public final class StalkerManager {
 		Vec3 normalWanderTarget;
 		// Ticks spent sprinting at the current cover point; too long means it is unreachable.
 		int dashTicks;
+		// Committed-advance counter (hysteresis on the unseen gate, see APPROACH_COMMIT_TICKS).
+		int advanceTicks;
 
 		State(UUID villagerId) {
 			this.villagerId = villagerId;
@@ -1054,6 +1102,7 @@ public final class StalkerManager {
 			normalWanderTarget = null;
 			normalLookTicks = 0;
 			dashTicks = 0;
+			advanceTicks = 0;
 		}
 	}
 }

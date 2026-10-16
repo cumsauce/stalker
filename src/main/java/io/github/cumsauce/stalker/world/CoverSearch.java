@@ -58,6 +58,17 @@ public final class CoverSearch {
 	}
 
 	/**
+	 * An approach step (staged closing): a standable, LOS-blocked spot near
+	 * {@code around}, which sits on the line toward the player. The stalker
+	 * paths to these one at a time instead of beelining, so it advances by
+	 * cover rather than in a straight dash across open ground.
+	 */
+	public static Optional<BlockPos> findApproachPoint(ServerLevel level, Vec3 around, Vec3 playerEye) {
+		return search(level, around, new Vec3[] {playerEye}, new int[] {2, 3, 4},
+			new int[] {0, 1, -1, 2, -2}, 0.0, false, Vec3.ZERO);
+	}
+
+	/**
 	 * Relocation-flavoured search (plan §7): finds an out-of-sight point in a
 	 * ring {@code [minRadius, maxRadius]} around an anchor (the player), with
 	 * no villager-distance term. Returns empty if no LOS-blocked point exists.
