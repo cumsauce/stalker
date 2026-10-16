@@ -1,0 +1,15 @@
+{
+	"schemaVersion": 1,
+	"id": "stalker-gametest",
+	"version": "1.0.0",
+	"name": "Stalker Game Tests",
+	"environment": "*",
+	"entrypoints": {
+		"fabric-gametest": [
+			"io.github.cumsauce.stalker.StalkerGameTest"
+		]
+	},
+	"depends": {
+		"stalker": "*"
+	}
+}

@@ -46,8 +46,9 @@ fabricApi {
 
 // Game tests need a real server (and a local-disk run dir, see below), so they never run inside `build`;
 // run them explicitly with `./gradlew runGameTest -Pstalker.runDir=<dir on a local disk>`.
+def runGameTests = providers.gradleProperty('stalker.gameTests').isPresent()
 tasks.matching { it.name in ['runGameTest', 'checkGametest'] }.configureEach {
-	onlyIf { false }
+	onlyIf { runGameTests }
 }
 
 // Minecraft locks its saves, which a VirtioFS shared folder (a VM building in a folder shared from the host) can't:

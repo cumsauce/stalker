@@ -51,10 +51,13 @@ public final class StalkerBrain {
 	private static final int STALK_PRIORITY = 0;
 
 	/** Memory holding the current move target. Present exactly while the manager wants the villager to move. */
-	public static final MemoryModuleType<Vec3> STALKING_TARGET = registerMemory("stalking_target", Vec3.CODEC);
+	public static final MemoryModuleType<Vec3> STALKING_TARGET = registerMemory(MemoryAccesses.TARGET_ID, Vec3.CODEC);
 
 	/** Memory holding the movement speed modifier the manager wants the villager to walk at. */
-	public static final MemoryModuleType<Float> STALKING_SPEED = registerMemory("stalking_speed", Codec.FLOAT);
+	public static final MemoryModuleType<Float> STALKING_SPEED = registerMemory(MemoryAccesses.SPEED_ID, Codec.FLOAT);
+
+	/** Speed used when the manager has set a target but no speed (and the slot is empty). */
+	private static final float DEFAULT_SPEED = 1.0F;
 
 	/** The custom activity, gated on the target memory so unbound villagers never enter it. */
 	public static final Activity STALKING = Registry.register(
@@ -235,11 +238,18 @@ public final class StalkerBrain {
 		MoveTargetTask() {
 			// Effectively no timeout: duration is Integer.MAX_VALUE ticks; the task ends only when the
 			// target memory is erased (canStillUse) or the brain stops the activity.
-			super(ImmutableMap.of(STALKING_TARGET, MemoryStatus.VALUE_PRESENT), Integer.MAX_VALUE);
+			// Both memories are listed even though only the target gates entry: Brain.registerMemory
+			// runs off a behavior's required memories, so a memory we only *read* would have no slot
+			// on this brain and Brain.getMemory would throw "Unregistered memory fetched". The speed
+			// is optional at entry (canStillUse and the read both default it).
+			super(ImmutableMap.of(
+				STALKING_TARGET, MemoryStatus.VALUE_PRESENT,
+				STALKING_SPEED, MemoryStatus.REGISTERED), Integer.MAX_VALUE);
 		}
 
 		@Override
 		protected boolean canStillUse(ServerLevel level, Villager villager, long timestamp) {
+			// Entry required both (so both are registered); the task keeps running on the target alone.
 			return villager.getBrain().hasMemoryValue(STALKING_TARGET);
 		}
 
@@ -265,7 +275,7 @@ public final class StalkerBrain {
 				|| (navigation.isDone()
 					&& timestamp - this.lastDoneRepathTimestamp >= DONE_REPATH_INTERVAL_TICKS);
 			if (stale) {
-				float speed = villager.getBrain().getMemory(STALKING_SPEED).orElse(1.0F);
+				float speed = villager.getBrain().getMemory(STALKING_SPEED).orElse(DEFAULT_SPEED);
 				navigation.moveTo(target.x, target.y, target.z, speed);
 				this.lastPathedTarget = target;
 				this.lastDoneRepathTimestamp = timestamp;
