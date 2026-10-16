@@ -9,6 +9,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import io.github.cumsauce.stalker.config.StalkerConfig;
 import io.github.cumsauce.stalker.net.Net;
 import io.github.cumsauce.stalker.sound.Cues;
+import io.github.cumsauce.stalker.sound.StalkerSounds;
 import io.github.cumsauce.stalker.sound.VoiceCues;
 import io.github.cumsauce.stalker.world.Phases;
 import io.github.cumsauce.stalker.world.StalkerBrain;
@@ -155,6 +156,12 @@ public final class Strikes {
 		StalkerConfig cfg = StalkerConfig.get();
 		player.addEffect(new MobEffectInstance(MobEffects.BLINDNESS, cfg.chaseDurationTicks()));
 		player.addEffect(new MobEffectInstance(MobEffects.POISON, cfg.poisonDurationTicks(), 0));
+		// The extended fart lands with the blindness: the moment the player is blinded and the chase
+		// begins. Gated on the same foleyVoices option as the scream/laugh, so it is opt-in with the
+		// rest of the voice layer even though the asset itself needs no Foley.
+		if (cfg.foleyVoices()) {
+			StalkerSounds.chaseFart(villager);
+		}
 		CHASE.put(player.getUUID(), new ChaseState());
 		StalkerManager.setPhase(villager, Phases.Phase.CHASE);
 	}

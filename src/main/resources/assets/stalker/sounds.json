@@ -1,0 +1,8 @@
+{
+	"voice_fart": {
+		"subtitle": "subtitles.stalker.voice_fart",
+		"sounds": [
+			"stalker:voice_fart"
+		]
+	}
+}

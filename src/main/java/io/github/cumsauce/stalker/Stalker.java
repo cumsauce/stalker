@@ -4,6 +4,7 @@ import io.github.cumsauce.stalker.bribe.BribeInteract;
 import io.github.cumsauce.stalker.command.StalkerCommands;
 import io.github.cumsauce.stalker.config.StalkerConfig;
 import io.github.cumsauce.stalker.net.Net;
+import io.github.cumsauce.stalker.sound.StalkerSounds;
 import io.github.cumsauce.stalker.world.StalkerBrain;
 import io.github.cumsauce.stalker.world.StalkerManager;
 import net.fabricmc.api.ModInitializer;
@@ -28,6 +29,7 @@ public final class Stalker implements ModInitializer {
 		// memory types into BuiltInRegistries, which Fabric freezes right after mod init.
 		// Deferring this to the first villager's brain build would throw "Registry is already frozen".
 		StalkerBrain.bootstrap();
+		StalkerSounds.bootstrap();
 		LOGGER.info("Stalker initialized");
 	}
 }
