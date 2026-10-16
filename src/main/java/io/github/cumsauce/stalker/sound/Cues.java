@@ -62,7 +62,7 @@ public final class Cues {
 	}
 
 	/**
-	 * Ambush windup: the patience strike's tell, played once when it stops waiting and decides to act —
+	 * Ambush windup: the patience strike's tell, played once a second before the strike lands —
 	 * a slow, low stare sting ahead of the strike tell proper.
 	 */
 	public static void ambushWindup(Villager villager) {

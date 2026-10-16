@@ -6,31 +6,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
 /**
- * The patience trigger, play feedback as rules: close, no villager witness, and a still victim are
- * what it takes to start; then it must hold for a few seconds before it commits.
+ * The patience trigger, play feedback as rules: close, no villager witness, no other player, and a
+ * still victim are what it takes to start; then it must hold for a few seconds before it commits.
  */
 class AmbushTest {
 	private static final double RANGE = 2.2;
 
 	@Test
-	void holdsWhenCloseUnobservedAndStill() {
-		assertTrue(Ambush.conditionsHold(RANGE, RANGE, 0, true));
-		assertTrue(Ambush.conditionsHold(RANGE * Ambush.RANGE_FACTOR, RANGE, 0, true));
+	void holdsWhenCloseUnobservedAloneAndStill() {
+		assertTrue(Ambush.conditionsHold(RANGE, RANGE, 0, false, true));
+		assertTrue(Ambush.conditionsHold(RANGE * Ambush.RANGE_FACTOR, RANGE, 0, false, true));
 	}
 
 	@Test
 	void aWitnessStopsIt() {
-		assertFalse(Ambush.conditionsHold(1.0, RANGE, 1, true));
+		assertFalse(Ambush.conditionsHold(1.0, RANGE, 1, false, true));
+	}
+
+	@Test
+	void anotherPlayerStopsIt() {
+		assertFalse(Ambush.conditionsHold(1.0, RANGE, 0, true, true));
 	}
 
 	@Test
 	void aMovingPlayerStopsIt() {
-		assertFalse(Ambush.conditionsHold(1.0, RANGE, 0, false));
+		assertFalse(Ambush.conditionsHold(1.0, RANGE, 0, false, false));
 	}
 
 	@Test
 	void outOfRangeDoesNotHold() {
-		assertFalse(Ambush.conditionsHold(RANGE * Ambush.RANGE_FACTOR + 0.01, RANGE, 0, true));
+		assertFalse(Ambush.conditionsHold(RANGE * Ambush.RANGE_FACTOR + 0.01, RANGE, 0, false, true));
 	}
 
 	@Test

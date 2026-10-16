@@ -6,7 +6,6 @@ import java.util.Optional;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -238,12 +237,13 @@ public final class CoverSearch {
 	/**
 	 * A candidate is cover when the viewer's eye cannot see an eye placed at
 	 * the candidate position (clip blocked), the block below is solid, the
-	 * candidate cell is actually standable, and the cell is dry. Without the
-	 * passability test a block buried in a wall counts as cover (the clip to an
-	 * eye inside the wall is blocked and the block below is solid), so the
-	 * villager paths into a wall. Without the dry test a water cell counts as
-	 * cover too (water has no collision shape) and the villager wades to it,
-	 * which is slow and conspicuous (play feedback: avoid water).
+	 * candidate cell is actually standable, and the cell is fluid-free. Without
+	 * the passability test a block buried in a wall counts as cover (the clip to
+	 * an eye inside the wall is blocked and the block below is solid), so the
+	 * villager paths into a wall. Without the fluid test a water or lava cell
+	 * counts as cover too (fluids have no collision shape) and the villager
+	 * wades into it, which is slow, conspicuous and lethal (play feedback: avoid
+	 * water).
 	 */
 	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3[] viewerEyes) {
 		BlockPos below = pos.below();
@@ -253,7 +253,7 @@ public final class CoverSearch {
 		if (!isPassable(level, pos) || !isPassable(level, pos.above())) {
 			return false;
 		}
-		if (isWet(level, pos) || isWet(level, pos.above()) || isWet(level, below)) {
+		if (isFluid(level, pos) || isFluid(level, pos.above()) || isFluid(level, below)) {
 			return false;
 		}
 		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
@@ -265,9 +265,10 @@ public final class CoverSearch {
 		return true;
 	}
 
-	/** True when the cell holds water (or a waterlogged block): somewhere the villager would wade. */
-	private static boolean isWet(ServerLevel level, BlockPos pos) {
-		return level.getFluidState(pos).is(FluidTags.WATER);
+	/** True when the cell holds any fluid (water or lava, waterlogged included): somewhere the
+	 * villager would wade or sink rather than walk. */
+	private static boolean isFluid(ServerLevel level, BlockPos pos) {
+		return !level.getFluidState(pos).isEmpty();
 	}
 
 	/** Ticks' worth of extra travel charged for one sampled slow block on a leg. */
@@ -277,10 +278,13 @@ public final class CoverSearch {
 	private static final double MAX_LEG_PENALTY = 24.0;
 
 	/**
-	 * A distance-equivalent cost for the leg {@code from -> to}: water is slow to wade and other
-	 * blocks (cobweb, powder snow, soul sand, mud) bog a villager down, so a detour over dry ground
-	 * should win. Returns 0 for a clean leg. Sampling is one probe per horizontal block, at the
-	 * interpolated height, so it is cheap enough to run per candidate.
+	 * A distance-equivalent cost for the leg {@code from -> to}: fluid is slow to wade and other
+	 * blocks (cobweb, powder snow, soul sand, mud) bog a villager down, so a detour over solid dry
+	 * ground should win. Returns 0 for a clean leg. Each step probes the feet cell and the cells
+	 * below and above it: a flat leg at standing height passes over a one-block-deep stream at
+	 * feet-below level, so probing only the feet cell would miss exactly the wade worth avoiding.
+	 * Sampling is one probe per horizontal block at the interpolated height, so it is cheap enough
+	 * to run per candidate.
 	 */
 	public static double terrainCost(ServerLevel level, Vec3 from, Vec3 to) {
 		double horizontal = Math.hypot(to.x - from.x, to.z - from.z);
@@ -292,7 +296,7 @@ public final class CoverSearch {
 			double y = from.y + (to.y - from.y) * f;
 			double z = from.z + (to.z - from.z) * f;
 			BlockPos feet = BlockPos.containing(x, y, z);
-			if (isWet(level, feet) || isWet(level, feet.above())) {
+			if (isFluid(level, feet) || isFluid(level, feet.above()) || isFluid(level, feet.below())) {
 				cost += SLOW_LEG_PENALTY;
 			} else if (isBogged(level, feet.below()) || isBogged(level, feet)) {
 				cost += SLOW_LEG_PENALTY * 0.5;

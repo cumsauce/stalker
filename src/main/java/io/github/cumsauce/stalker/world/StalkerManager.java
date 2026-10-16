@@ -122,6 +122,17 @@ public final class StalkerManager {
 	/** Ticks between close-range heartbeats. */
 	private static final int CLOSE_HEARTBEAT_INTERVAL_TICKS = 60;
 
+	/** Squared per-tick movement under which the victim counts as standing still (0.01 blocks/tick
+	 * ≈ 0.2 blocks/s). Walking (~0.22), sneaking (~0.065) and being pushed all clear this. */
+	private static final double STILLNESS_DISTANCE_SQR = 1.0E-4;
+
+	/** The ambush windup sting plays this many ticks before the patience strike lands. */
+	private static final int WINDUP_LEAD_TICKS = 20;
+
+	/** Minimum ticks between approach-plan rebuilds: a rebuild is hundreds of occlusion clips, and
+	 * one that finds no hops would otherwise repeat every tick in open terrain. */
+	private static final int PLAN_REBUILD_COOLDOWN_TICKS = 10;
+
 	/** Ticks between pretend-normal idle glances (never at the player). */
 	private static final int NORMAL_LOOK_INTERVAL_TICKS = 40;
 
@@ -249,6 +260,11 @@ public final class StalkerManager {
 			case STUN -> tickStun(level, player, villager, state, c, distance);
 		}
 
+		// A strike can tear the pair down mid-tick (the snatch unbinds and removes the state); the
+		// released villager must not get a parting mumble or footstep from the state it no longer owns.
+		if (STATES.get(player.getUUID()) != state) {
+			return;
+		}
 		tickCues(villager, player, state, distance, c);
 	}
 
@@ -339,24 +355,33 @@ public final class StalkerManager {
 	 */
 	private static boolean tickAmbush(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
 		// Stillness: anything more than a hair of movement per tick (walking, sneaking, being pushed)
-		// resets the hold. The stored position is refreshed every tick on purpose, so a slow walk never
-		// accumulates.
+		// resets the hold. The stored position is refreshed every tick on purpose, so a slow drift
+		// never accumulates.
 		boolean still = state.lastPlayerPos != null
-			&& state.lastPlayerPos.distanceToSqr(player.position()) < 0.0025;
+			&& state.lastPlayerPos.distanceToSqr(player.position()) < STILLNESS_DISTANCE_SQR;
 		state.lastPlayerPos = player.position();
 
+		// Cheap gates first: the witness search is an entity query plus a clip per villager found,
+		// so it only runs when the strike could actually fire. The hold does not count while the
+		// strike cooldown runs either — that keeps the windup tell a fixed lead ahead of a strike
+		// that really comes, and keeps the post-stun escape window real for a still player.
+		if (state.strikeCooldown > 0 || !still
+			|| distance > c.strikeRange() * Ambush.RANGE_FACTOR) {
+			state.ambushTicks = 0;
+			return false;
+		}
+
 		boolean holding = Ambush.conditionsHold(distance, c.strikeRange(),
-			villagerWitnesses(level, villager), still)
-			&& !otherPlayerNearby(level, player);
+			villagerWitnesses(level, villager), otherPlayerNearby(level, player), still);
 		if (!holding) {
 			state.ambushTicks = 0;
 			return false;
 		}
-		if (state.ambushTicks == 0) {
+		state.ambushTicks++;
+		if (state.ambushTicks == Ambush.HOLD_TICKS - WINDUP_LEAD_TICKS) {
 			Cues.ambushWindup(villager);
 		}
-		state.ambushTicks++;
-		return state.strikeCooldown <= 0 && Ambush.ready(state.ambushTicks);
+		return Ambush.ready(state.ambushTicks);
 	}
 
 	/** Villagers other than {@code villager} that can see it — the witnesses a strike must avoid. */
@@ -405,6 +430,13 @@ public final class StalkerManager {
 			Vec3 hop = state.plan.peek();
 			return hop == null ? null : hop;
 		}
+		// Rebuilding costs three findApproachPoint scans — up to ~720 occlusion clips — and an empty
+		// result is always "stale", so in open terrain (no cover to hop between) an unthrottled
+		// rebuild runs every tick of every committed advance. Keep the current plan (or the direct
+		// fallback) meanwhile.
+		if (state.planRebuildCooldown > 0) {
+			return state.plan.peek();
+		}
 		// Candidates are ranked by hiddenness versus the distance they add (plan feedback: pick the
 		// best spot by how hidden it is, not just the nearest), and the planner walks them in that
 		// preference order.
@@ -433,6 +465,7 @@ public final class StalkerManager {
 		state.plan.addAll(hops);
 		state.planAnchor = playerPos;
 		state.planAge = 0;
+		state.planRebuildCooldown = PLAN_REBUILD_COOLDOWN_TICKS;
 		Vec3 hop = state.plan.peek();
 		return hop == null ? null : hop;
 	}
@@ -1055,6 +1088,7 @@ public final class StalkerManager {
 		state.phase = phase;
 		state.spottedTicks = 0;
 		state.unspottedTicks = 0;
+		state.ambushTicks = 0;
 		if (phase == Phases.Phase.STUN) {
 			state.stunTicks = StalkerConfig.get().stunDurationTicks();
 		}
@@ -1245,6 +1279,8 @@ public final class StalkerManager {
 		Vec3 planAnchor;
 		// Ticks since the plan was built; long-lived plans are re-checked even if the player stays.
 		int planAge;
+		// Rate limit on plan rebuilds (see nextPlanHop): rebuilding is hundreds of occlusion clips.
+		int planRebuildCooldown;
 
 		State(UUID villagerId) {
 			this.villagerId = villagerId;
@@ -1253,6 +1289,9 @@ public final class StalkerManager {
 		void tick(ServerLevel level, ServerPlayer player, StalkerConfig c) {
 			if (coverSearchCooldown > 0) {
 				coverSearchCooldown--;
+			}
+			if (planRebuildCooldown > 0) {
+				planRebuildCooldown--;
 			}
 		}
 

@@ -19,8 +19,8 @@ While it is only stalking — not chasing — you can buy it off. What counts as
 All the logic is server-side, driven from a per-level tick handler that keys everything by UUID, so nothing depends on the villager staying loaded.
 
 - **Bindings** use Fabric's data attachment API on both entities: the villager remembers which player it stalks, the player remembers which villager stalks them. They survive restarts, chunk unloads and dimension changes. If the villager's chunk unloads or it ends up in another dimension — cases where it is not rendered at all — it is brought back out of sight; it never visibly teleports next to you.
-- **Movement** runs inside the villager's own brain. A custom `Activity` (gated on a memory the manager writes each tick) drives navigation through the vanilla pathfinder, so an unbound villager's behavior is untouched and a bound one still flees zombies and raids. It walks slowly while you might be watching and only picks up the pace on a committed advance you cannot see, so it can keep up over long distances without giving itself away.
-- **Senses** are plain geometry: a `Level#clip` line-of-sight test, a look-cone dot product, and a 48-candidate cover search (16 directions × 3 radii) that only counts spots the player cannot see, the villager can actually stand in, and that are dry. Candidate legs are charged for slow ground — water, cobweb, soul sand — so it detours over dry land rather than wading.
+- **Movement** runs inside the villager's own brain. A custom `Activity` (gated on a memory the manager writes each tick) drives navigation through the vanilla pathfinder, so an unbound villager's behavior is untouched and a bound one still flees zombies and raids. It walks slowly while you might be watching and only picks up the pace on a committed advance while you are not looking at it, so it can keep up over long distances without giving itself away.
+- **Senses** are plain geometry: a `Level#clip` line-of-sight test, a look-cone dot product, and a 48-candidate cover search (16 directions × 3 radii) that only counts spots the player cannot see, the villager can actually stand in, and that hold no fluid. Candidate legs are charged for slow ground — water, lava, cobweb, powder snow, soul sand, mud — so it detours over dry land rather than wading.
 - **The tell** is a custom S2C packet that turns your camera toward the villager for a moment. On a vanilla client, or with the mod only on the server, it degrades to the sound cue alone.
 - **Sounds** are vanilla events, pitched and positioned: a low mumble when the binding is made, footsteps and a mumble as it stalks, a soft noise when it peeks, a heartbeat once it is close and hidden, and a slow stare sting when it decides to stop waiting. There are no custom audio assets.
 
@@ -72,7 +72,7 @@ It goes on the **server** (or in the `mods/` folder of a single-player world). Y
 | `relocateBehindTicks`, `relocateRingMin`, `relocateRingMax`, `crossDimensionFollow` | 600, 48, 64, true | Bringing it back when its chunk is unloaded or it is in another dimension |
 | `mumble*`, `footstep*`, `chaseHeartbeat*` | | Cue cadences and volumes (the bind, peek and ambush cues are fixed vanilla pitches) |
 
-The patience strike's range and hold are constants, not config keys: within `strikeRange × 2`, with no villager witness in line of sight and no other player within 32 blocks, it strikes after 60 ticks (3 s) of you standing still.
+The patience strike's range and hold are constants, not config keys: within `strikeRange × 2`, with no villager within 24 blocks having it in line of sight and no other player within 32 blocks, it strikes after 60 ticks (3 s) of you standing truly still (sneaking or being pushed counts as moving). A stare sting plays a second before the strike lands. The hold does not count while it is still recovering from a daze.
 
 ## Development
 
@@ -92,7 +92,7 @@ Building inside a VM from a folder shared with the host over VirtioFS needs `-Ps
 ## Testing
 
 - **Unit tests** (`src/test`, run by `./gradlew build`): the per-profession bribe tables, the config load/save round-trip, the bind-eligibility rules, the brain memory-declaration invariant, the approach planner, and the patience-strike trigger.
-- **Game tests** (`src/gametest`, `./gradlew runGameTest -Pstalker.gameTests`): a bound villager's brain ticks without error (the regression for the "Unregistered memory fetched" crash), the hamlet builder places a bell and villagers, the spawn ring produces employed adults, and a villager on a path opens a closed door. These run on a real server and are what CI runs on every push.
+- **Game tests** (`src/gametest`, `./gradlew runGameTest -Pstalker.gameTests`): a stalker-driven villager's brain ticks without error (the regression for the "Unregistered memory fetched" crash), the hamlet builder places a bell and villagers, the spawn ring produces employed adults, and a villager on a path opens a closed door. These run on a real server and are what CI runs on every push.
 
 ## Releasing
 
