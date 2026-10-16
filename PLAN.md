@@ -38,7 +38,7 @@ Cheap to change now, annoying later. Defaults in parentheses.
                           │
                           ▼
    ┌─────────── STALK ───────────┐        bribe ≥ threshold ──► accept, item taken,
-   │  orbit at 12–24 blocks,     │──────► (same in COVER)      unbind, blacklist
+   │  hold behind cover,         │──────► (same in COVER)      unbind, blacklist
    │  approach only unseen       │
    │                             │        bribe < threshold ──► pretend-accept: sounds
    │  spotted (seen, in cone)    │                          identical, then CHASE
@@ -295,7 +295,7 @@ Each milestone: implement, `./gradlew build` (compiles + unit tests) green, run 
 | `bindChancePerMinute` | 0.004 | Random bind roll per eligible player per minute |
 | `bindMaxDistance` | 48 | Villager search radius for binding |
 | `requireNight` / `requireAlone` | false | Extra bind conditions (alone = no other player within 64) |
-| `orbitInner` / `orbitOuter` | 12 / 24 | Hold band in STALK |
+
 | `spottedRange` / `spottedAngleDeg` | 28 / 25 | Spotted cone |
 | `strikeRange` | 2.2 | Strike trigger (2026-10-16: superseded §4's facing rule — it now strikes only when out of LOS, not when behind) |
 | `teleportChance` | 0.15 | Variant A share of strikes |

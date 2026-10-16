@@ -415,7 +415,12 @@ public final class StalkerManager {
 		Vec3 target;
 		boolean holdingAtCover = false;
 		boolean outsideAmbushRange = distance > c.strikeRange() * Ambush.RANGE_FACTOR;
-		if (advancing) {
+		if (advancing && distance <= c.strikeRange() * Ambush.RANGE_FACTOR && state.playerCanSeeVillager) {
+			// Closing in, but the player's line of sight is clear, so it cannot strike. Stop at the
+			// ambush rim and let the ambush path (no LOS requirement) finish; walking into the
+			// player's body would only shove them. Plan §2: close to strike range only if unseen.
+			target = null;
+		} else if (advancing) {
 			// Hop by hop through cover toward the plan target (intercept point, or the last place the
 			// player was seen); nextPlanHop returns the plan target itself when no hop fits.
 			target = nextPlanHop(level, player, villager, state);
@@ -862,9 +867,11 @@ public final class StalkerManager {
 		StalkerBrain.setTarget(villager, null, 0.0F);
 		state.stunTicks--;
 		if (state.stunTicks <= 0) {
-			// Back to STALK; the 5 s strike cooldown keeps the escape window real.
+			// Back to STALK; the 5 s strike cooldown keeps the escape window real. The manager is
+			// the sole owner of the stun's end, so drop the stun timers here.
 			state.phase = Phases.Phase.STALK;
 			state.strikeCooldown = STRIKE_COOLDOWN_AFTER_STUN;
+			Strikes.clear(player);
 		}
 	}
 
@@ -1370,14 +1377,6 @@ public final class StalkerManager {
 	 */
 	public static void blacklistAfterSuccess(ServerPlayer player) {
 		unbind(player, true);
-	}
-
-	/** Applies the 5-second post-stun strike cooldown; called by Strikes (plan §4). */
-	public static void noteStrikeCooldown(ServerPlayer player) {
-		State state = stateFor(player);
-		if (state != null) {
-			state.strikeCooldown = STRIKE_COOLDOWN_AFTER_STUN;
-		}
 	}
 
 	/**

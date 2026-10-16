@@ -57,7 +57,6 @@ It goes on the **server** (or in the `mods/` folder of a single-player world). Y
 | `bindChancePerMinute` | 0.004 | Per-player, per-minute chance to be picked (~once per 4 hours) |
 | `bindMaxDistance` | 48 | How close an eligible villager must be |
 | `requireNight`, `requireAlone` | false | Restrict binds to night / to being alone |
-| `orbitInner`, `orbitOuter` | 12, 24 | The band it stalks you from |
 | `spottedRange`, `spottedAngleDeg` | 28, 25 | What counts as you seeing it |
 | `strikeRange` | 2.2 | How close it must be to strike while out of your line of sight |
 | `teleportChance` | 0.15 | Chance the strike is the snatch (it throws *you*) instead of the chase |

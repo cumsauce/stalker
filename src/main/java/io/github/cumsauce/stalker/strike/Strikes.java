@@ -69,7 +69,6 @@ public final class Strikes {
 
 	/** Per-player stun progress. */
 	private static final class StunState {
-		int ticks;
 		int ticksSinceLook;
 	}
 
@@ -281,24 +280,16 @@ public final class Strikes {
 	}
 
 	/**
-	 * Stun tick, driven by the manager while the phase is STUN: no movement, head
-	 * lolling; the player escaping past {@code stunEscapeDistance} ends the pair,
-	 * the timeout returns it to STALK under a strike cooldown.
+	 * Stun tick, driven by the manager while the phase is STUN: keep the villager frozen and loll
+	 * its head. The manager alone owns the stun's escape unbind and its timeout back to STALK, so
+	 * there is exactly one place that ends a stun.
 	 */
 	public static void tickStun(Villager villager, ServerPlayer player) {
-		StalkerConfig cfg = StalkerConfig.get();
 		StunState state = STUN.computeIfAbsent(player.getUUID(), id -> new StunState());
 
 		// Stay frozen; keep the navigation stopped in case something else started it.
 		StalkerBrain.setTarget(villager, null, 0.0f);
 
-		if (player.distanceToSqr(villager) > cfg.stunEscapeDistance() * cfg.stunEscapeDistance()) {
-			STUN.remove(player.getUUID());
-			StalkerManager.blacklistAfterSuccess(player);
-			return;
-		}
-
-		state.ticks++;
 		state.ticksSinceLook++;
 		if (state.ticksSinceLook >= STUN_LOOK_INTERVAL_TICKS) {
 			state.ticksSinceLook = 0;
@@ -308,12 +299,6 @@ public final class Strikes {
 			double dist = 3.0 + rng.nextDouble() * 5.0;
 			Vec3 look = villager.position().add(Math.cos(angle) * dist, 0.5 + rng.nextDouble() * 1.5, Math.sin(angle) * dist);
 			villager.getLookControl().setLookAt(look.x, look.y, look.z, 5.0f, 5.0f);
-		}
-
-		if (state.ticks >= cfg.stunDurationTicks()) {
-			STUN.remove(player.getUUID());
-			StalkerManager.setPhase(villager, Phases.Phase.STALK);
-			StalkerManager.noteStrikeCooldown(player);
 		}
 	}
 }

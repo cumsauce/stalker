@@ -23,8 +23,6 @@ public record StalkerConfig(
 		double bindMaxDistance,
 		boolean requireNight,
 		boolean requireAlone,
-		double orbitInner,
-		double orbitOuter,
 		double spottedRange,
 		double spottedAngleDeg,
 		double strikeRange,
@@ -63,7 +61,6 @@ public record StalkerConfig(
 		boolean foleyVoices) {
 	public static final StalkerConfig DEFAULT = new StalkerConfig(
 			0.004, 48, false, false,
-			12, 24,
 			28, 25,
 			2.2,
 			0.15, 100, 3,
@@ -146,8 +143,6 @@ public record StalkerConfig(
 				num(json, "bindMaxDistance", d.bindMaxDistance),
 				flag(json, "requireNight", d.requireNight),
 				flag(json, "requireAlone", d.requireAlone),
-				num(json, "orbitInner", d.orbitInner),
-				num(json, "orbitOuter", d.orbitOuter),
 				num(json, "spottedRange", d.spottedRange),
 				num(json, "spottedAngleDeg", d.spottedAngleDeg),
 				num(json, "strikeRange", d.strikeRange),
@@ -192,8 +187,6 @@ public record StalkerConfig(
 		json.addProperty("bindMaxDistance", bindMaxDistance);
 		json.addProperty("requireNight", requireNight);
 		json.addProperty("requireAlone", requireAlone);
-		json.addProperty("orbitInner", orbitInner);
-		json.addProperty("orbitOuter", orbitOuter);
 		json.addProperty("spottedRange", spottedRange);
 		json.addProperty("spottedAngleDeg", spottedAngleDeg);
 		json.addProperty("strikeRange", strikeRange);

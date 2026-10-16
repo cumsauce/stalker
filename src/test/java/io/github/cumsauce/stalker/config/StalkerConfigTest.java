@@ -23,8 +23,6 @@ class StalkerConfigTest {
 		assertEquals(48, d.bindMaxDistance());
 		assertFalse(d.requireNight());
 		assertFalse(d.requireAlone());
-		assertEquals(12, d.orbitInner());
-		assertEquals(24, d.orbitOuter());
 		assertEquals(28, d.spottedRange());
 		assertEquals(25, d.spottedAngleDeg());
 		assertEquals(2.2, d.strikeRange());
@@ -83,7 +81,6 @@ class StalkerConfigTest {
 		assertTrue(Files.notExists(file), "loading a missing file does not write one");
 		StalkerConfig custom = new StalkerConfig(
 				0.5, 16, true, true,
-				6, 30,
 				20, 40,
 				3.0,
 				1.0, 64, 2,
