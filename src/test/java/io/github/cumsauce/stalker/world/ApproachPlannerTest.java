@@ -21,13 +21,14 @@ class ApproachPlannerTest {
 	private static final java.util.function.Predicate<Vec3> VISIBLE_IN_BAND = p -> p.x > 5.0 && p.x < 12.0;
 
 	@Test
-	@DisplayName("an unseen route hops through candidates nearest-first, always making progress")
+	@DisplayName("hops are consumed in the caller's preference order, always making progress")
 	void plansThroughCover() {
 		Vec3 from = new Vec3(0, 0, 0);
 		Vec3 to = new Vec3(20, 0, 0);
+		// Preference order: 6 (best hiddenness-vs-distance), then 13; 2 is last and never fits.
 		List<Vec3> candidates = List.of(new Vec3(6, 0, 0), new Vec3(13, 0, 0), new Vec3(2, 0, 0));
 		List<Vec3> plan = ApproachPlanner.plan(from, to, candidates, NOTHING_VISIBLE);
-		assertEquals(List.of(new Vec3(2, 0, 0), new Vec3(6, 0, 0), new Vec3(13, 0, 0)), plan);
+		assertEquals(List.of(new Vec3(6, 0, 0), new Vec3(13, 0, 0)), plan);
 	}
 
 	@Test

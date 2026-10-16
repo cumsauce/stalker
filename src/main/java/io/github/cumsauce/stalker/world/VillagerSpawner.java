@@ -175,10 +175,10 @@ public final class VillagerSpawner {
 				: centreColumn.getZ();
 		level.setBlock(new BlockPos(doorX, y, doorZ), Blocks.OAK_DOOR.defaultBlockState()
 				.setValue(DoorBlock.FACING, facing)
-				.setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER), 3);
+				.setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER), 2);
 		level.setBlock(new BlockPos(doorX, y + 1, doorZ), Blocks.OAK_DOOR.defaultBlockState()
 				.setValue(DoorBlock.FACING, facing)
-				.setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER), 3);
+				.setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER), 2);
 
 		// Interior: bed along the back (opposite the door) and a torch by it.
 		Direction inward = facing.getOpposite();

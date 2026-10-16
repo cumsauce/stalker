@@ -14,6 +14,11 @@ import net.minecraft.world.entity.ai.memory.MemoryStatus;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.entity.schedule.Activity;
+import net.minecraft.core.BlockPos;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.level.pathfinder.Path;
+import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
@@ -284,6 +289,28 @@ public final class StalkerBrain {
 				navigation.moveTo(target.x, target.y, target.z, speed);
 				this.lastPathedTarget = target;
 				this.lastDoneRepathTimestamp = timestamp;
+			}
+			openDoorsOnPath(level, navigation);
+		}
+
+		/**
+		 * Opens closed doors standing in the next few path nodes. Villagers' brains would do this via
+		 * the vanilla OpenDoor task, but that keys off the WALK_TARGET memory, which this task
+		 * deliberately does not use (plan Risk #1) — so the villager would otherwise bump into every
+		 * closed door between it and the player. Doors are left open behind it, which suits it.
+		 */
+		private void openDoorsOnPath(ServerLevel level, PathNavigation navigation) {
+			Path path = navigation.getPath();
+			if (path == null || path.isDone()) {
+				return;
+			}
+			for (int i = 0; i < Math.min(3, path.getNodeCount()); i++) {
+				BlockPos nodePos = path.getNodePos(i);
+				var state = level.getBlockState(nodePos);
+				if (state.getBlock() instanceof DoorBlock door && !state.getValue(DoorBlock.OPEN)) {
+					level.setBlock(nodePos, state.setValue(DoorBlock.OPEN, true), 3);
+					level.playSound(null, nodePos, SoundEvents.WOODEN_DOOR_OPEN, SoundSource.BLOCKS, 0.8F, 1.0F);
+				}
 			}
 		}
 

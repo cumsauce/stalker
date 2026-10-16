@@ -37,21 +37,20 @@ public final class ApproachPlanner {
 	 * (points that are standable and out of sight). {@code visibleToPlayer} reports whether the
 	 * player can see a position — used to test each leg's midpoint.
 	 *
-	 * @return the hops nearest-first, or an empty list when no candidate forms a safe leg
+	 * @return the hops in plan order, or an empty list when no candidate forms a safe leg
 	 */
 	public static List<Vec3> plan(Vec3 from, Vec3 to, List<Vec3> candidates,
 			Predicate<Vec3> visibleToPlayer) {
 		List<Vec3> plan = new ArrayList<>();
 		Vec3 cursor = from;
 		double remaining = cursor.distanceTo(to);
-		// Greedy: repeatedly take the nearest candidate that progresses, is safe to walk to, and
-		// lands meaningfully closer to the player than where we are.
+		// Greedy over the caller's preference order: the first candidate each round that progresses,
+		// is safe to walk to, and lands meaningfully closer to the player than where we are.
 		while (true) {
 			Vec3 next = null;
-			double nextDistance = Double.MAX_VALUE;
 			for (Vec3 candidate : candidates) {
 				double leg = cursor.distanceTo(candidate);
-				if (leg < 2.0 || leg >= nextDistance) {
+				if (leg < 2.0) {
 					continue;
 				}
 				double progress = remaining - candidate.distanceTo(to);
@@ -62,7 +61,7 @@ public final class ApproachPlanner {
 					continue;
 				}
 				next = candidate;
-				nextDistance = leg;
+				break;
 			}
 			if (next == null) {
 				break;

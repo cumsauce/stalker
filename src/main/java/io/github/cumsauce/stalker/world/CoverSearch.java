@@ -102,9 +102,65 @@ public final class CoverSearch {
 	 * paths to these one at a time instead of beelining, so it advances by
 	 * cover rather than in a straight dash across open ground.
 	 */
-	public static Optional<BlockPos> findApproachPoint(ServerLevel level, Vec3 around, Vec3 playerEye) {
-		return search(level, around, new Vec3[] {playerEye}, new int[] {2, 3, 4},
-			new int[] {0, 1, -1, 2, -2}, 0.0, false, Vec3.ZERO);
+	/** How strongly a visible approach spot is penalised relative to a fully hidden one. */
+	public static final double EXPOSURE_PENALTY = 6.0;
+
+	/** Eye-sample offsets around the player used to measure how hidden a spot is. */
+	private static final double[] HIDDENNESS_SAMPLES = {0.0, 2.0, -2.0, 3.0, -3.0};
+
+	/**
+	 * An approach step (staged closing): a standable, LOS-blocked spot near
+	 * {@code around}, which sits on the line toward the player. Scored by how
+	 * hidden the spot is — rays to five points around the player — against the
+	 * distance it adds, so the villager prefers spots that stay hidden even if
+	 * the player shifts.
+	 */
+	public static Optional<BlockPos> findApproachPoint(ServerLevel level, Vec3 around, Vec3 playerEye, Vec3 playerPos) {
+		BlockPos best = null;
+		double bestScore = Double.MAX_VALUE;
+		for (int i = 0; i < DIRECTIONS; i++) {
+			double angle = (Math.PI * 2.0 * i) / DIRECTIONS;
+			double dx = Math.cos(angle);
+			double dz = Math.sin(angle);
+			for (int radius : new int[] {2, 3, 4}) {
+				int x = BlockPos.containing(around.x + dx * radius, 0.0, 0.0).getX();
+				int z = BlockPos.containing(0.0, 0.0, around.z + dz * radius).getZ();
+				for (int dy : new int[] {0, 1, -1, 2, -2}) {
+					BlockPos pos = new BlockPos(x, BlockPos.containing(0.0, around.y, 0.0).getY() + dy, z);
+					if (!isCover(level, pos, new Vec3[] {playerEye})) {
+						continue;
+					}
+					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
+					double hiddenness = hiddennessOf(level, center.add(0.0, 1.6, 0.0), playerEye, playerPos);
+					double score = center.distanceTo(around) + (1.0 - hiddenness) * EXPOSURE_PENALTY;
+					if (score < bestScore) {
+						bestScore = score;
+						best = pos;
+					}
+				}
+			}
+		}
+		return Optional.ofNullable(best);
+	}
+
+	/**
+	 * How hidden an eye position is from the player: 1.0 when every sample ray to points around the
+	 * player is blocked (fully concealed even if the player shifts), 0.0 when all visible. Used both
+	 * for approach scoring and by the manager to rank hop candidates.
+	 */
+	public static double hiddennessOf(ServerLevel level, Vec3 eye, Vec3 playerEye, Vec3 playerPos) {
+		Vec3 lateral = playerPos.subtract(eye).multiply(1.0, 0.0, 1.0);
+		Vec3 side = lateral.lengthSqr() < 1.0E-4 ? new Vec3(0.0, 0.0, 1.0) : new Vec3(-lateral.z, 0.0, lateral.x).normalize();
+		int blocked = 0;
+		int total = 0;
+		for (double offset : HIDDENNESS_SAMPLES) {
+			Vec3 sample = playerEye.add(side.scale(offset));
+			total++;
+			if (!Senses.canSee(level, eye, sample)) {
+				blocked++;
+			}
+		}
+		return total == 0 ? 0.0 : (double) blocked / total;
 	}
 
 	/**

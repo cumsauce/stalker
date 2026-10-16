@@ -67,7 +67,7 @@ public final class StalkerManager {
 	/** Spotted dash speed (plan §3). */
 
 	/** Closing speed (plan §2). */
-	private static final float STALK_SPEED = 1.0F;
+	private static final float STALK_SPEED = 0.75F;
 
 	/** Within this distance of its cover the villager counts as hidden (plan §3). */
 	private static final double AT_COVER_DISTANCE = 1.5;
@@ -98,11 +98,21 @@ public final class StalkerManager {
 	/** Rebuild the approach plan when the player has moved this far from where it was planned. */
 	private static final double PLAN_STALE_DISTANCE = 8.0;
 
+	/** Distance at which the stalker counts as fallen behind (plan §7's long-span tracking). */
+	private static final double FALLEN_BEHIND_DISTANCE = 40.0;
+
+	/** Ticks fallen-behind before it quietly repositions (it should never visibly chase). */
+	private static final int FALLEN_BEHIND_RELOCATE_TICKS = 100;
+
+	/** Ring for the fallen-behind reposition: closer than the default, always behind-ish. */
+	private static final int BEHIND_RING_MIN = 24;
+	private static final int BEHIND_RING_MAX = 40;
+
 	/** Rebuild the approach plan after this many ticks even if the player stayed put. */
 	private static final int PLAN_MAX_AGE_TICKS = 200;
 
 	/** Slower escape (was 1.25 — a full sprint): reads as scrambling, not teleporting. */
-	private static final float COVER_SPRINT_SPEED = 0.95F;
+	private static final float COVER_SPRINT_SPEED = 0.8F;
 
 	/** Ticks between pretend-normal idle glances (never at the player). */
 	private static final int NORMAL_LOOK_INTERVAL_TICKS = 40;
@@ -220,6 +230,22 @@ public final class StalkerManager {
 			}
 		}
 
+		// Fallen-behind accounting: outrunning it must not work. Rather than a visible chase (which
+		// gave it away and was escapable by sprinting), it quietly repositions to a hidden point
+		// 24-40 blocks from the player and resumes the stalk from there.
+		if (distance > FALLEN_BEHIND_DISTANCE) {
+			state.fallBehindTicks++;
+			if (state.fallBehindTicks > FALLEN_BEHIND_RELOCATE_TICKS
+					&& relocate(villager, player, level, c, BEHIND_RING_MIN, BEHIND_RING_MAX)) {
+				state.fallBehindTicks = 0;
+				state.advanceTicks = 0;
+				state.resetMovement();
+				return;
+			}
+		} else {
+			state.fallBehindTicks = 0;
+		}
+
 		// Senses update (STALK and COVER both watch the spotted latch).
 		if (state.phase == Phases.Phase.STALK || state.phase == Phases.Phase.COVER) {
 			if (Senses.isSpotted(level, player, villager, c.spottedRange(), c.spottedAngleDeg())) {
@@ -276,10 +302,7 @@ public final class StalkerManager {
 		boolean advancing = state.advanceTicks > 0;
 
 		Vec3 target;
-		if (distance > RELOCATE_DISTANCE || distance > 64.0) {
-			// > 64: close directly, stealth optional (catch-up).
-			target = player.position();
-		} else if (advancing) {
+		if (advancing) {
 			// Committed advance: walk the committed hop plan (built through cover, legs out of
 			// sight) and rebuild it only when it is spent, stale, or the player has moved away
 			// from where it was planned. This is what makes the approach look thought out.
@@ -329,14 +352,24 @@ public final class StalkerManager {
 			Vec3 hop = state.plan.peek();
 			return hop == null ? null : hop;
 		}
-		List<Vec3> candidates = new ArrayList<>();
+		// Candidates are ranked by hiddenness versus the distance they add (plan feedback: pick the
+		// best spot by how hidden it is, not just the nearest), and the planner walks them in that
+		// preference order.
+		record Ranked(Vec3 point, double score) {}
+		List<Ranked> ranked = new ArrayList<>();
 		for (double fraction : APPROACH_FRACTIONS) {
 			Vec3 sample = villager.position().lerp(playerPos, fraction);
-			for (BlockPos pos : CoverSearch.findApproachPoint(level, sample, player.getEyePosition())
-					.stream().limit(2).toList()) {
-				candidates.add(Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5));
+			for (BlockPos pos : CoverSearch.findApproachPoint(level, sample,
+					player.getEyePosition(), player.position()).stream().limit(2).toList()) {
+				Vec3 point = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
+				double hiddenness = CoverSearch.hiddennessOf(level, point.add(0.0, 1.6, 0.0),
+						player.getEyePosition(), playerPos);
+				double leg = villager.position().distanceTo(point);
+				ranked.add(new Ranked(point, leg + (1.0 - hiddenness) * CoverSearch.EXPOSURE_PENALTY));
 			}
 		}
+		ranked.sort((a, b) -> Double.compare(a.score(), b.score()));
+		List<Vec3> candidates = ranked.stream().map(Ranked::point).toList();
 		Predicate<Vec3> seen = point -> Senses.canSee(level, player.getEyePosition(), point.add(0.0, 1.0, 0.0));
 		List<Vec3> hops = ApproachPlanner.plan(villager.position(), playerPos, candidates, seen);
 		state.plan.clear();
@@ -478,7 +511,7 @@ public final class StalkerManager {
 				Vec3 drift = villager.position().add(dir.scale(2.0 + level.getRandom().nextInt(3))).add(side);
 				state.normalWanderTarget = drift;
 				state.dashTicks = 0;
-				issueMovement(villager, state, drift, 0.55F);
+				issueMovement(villager, state, drift, 0.45F);
 			}
 		} else {
 			state.normalWanderTicks = NORMAL_WANDER_INTERVAL_TICKS;
@@ -662,12 +695,18 @@ public final class StalkerManager {
 	 * was found or cross-dimension follow is disabled.
 	 */
 	private static boolean relocate(Villager villager, ServerPlayer player, ServerLevel playerLevel, StalkerConfig c) {
+		return relocate(villager, player, playerLevel, c,
+			(int) c.relocateRingMin(), (int) c.relocateRingMax());
+	}
+
+	/** Quietly repositions the stalker to an LOS-blocked point in the given ring around the player. */
+	private static boolean relocate(Villager villager, ServerPlayer player, ServerLevel playerLevel, StalkerConfig c,
+			int ringMin, int ringMax) {
 		if (villager.level() != playerLevel && !c.crossDimensionFollow()) {
 			dropVillagerSide(player);
 			return false;
 		}
-		var point = CoverSearch.findRelocationPoint(playerLevel, player.position(),
-			(int) c.relocateRingMin(), (int) c.relocateRingMax());
+		var point = CoverSearch.findRelocationPoint(playerLevel, player.position(), ringMin, ringMax);
 		if (point.isEmpty()) {
 			return false;
 		}
@@ -1130,6 +1169,9 @@ public final class StalkerManager {
 		int dashTicks;
 		// Committed-advance counter (hysteresis on the unseen gate, see APPROACH_COMMIT_TICKS).
 		int advanceTicks;
+		// Consecutive ticks the player has been out of reach; a sprinting player must not win by
+		// distance — the stalker repositions out of sight instead of visibly chasing.
+		int fallBehindTicks;
 		// The committed approach route: hops between cover, nearest first (ApproachPlanner).
 		final ArrayDeque<Vec3> plan = new ArrayDeque<>();
 		// Player position when the plan was built; the plan is rebuilt when they stray from it.
