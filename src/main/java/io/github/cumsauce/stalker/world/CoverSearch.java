@@ -31,15 +31,30 @@ public final class CoverSearch {
 	private CoverSearch() {
 	}
 
+	/** Lateral eye offsets (blocks) the cover must also block: cover that only hides the villager
+	 * from the player's exact current eye breaks the moment the player sidesteps, which read as the
+	 * villager being "stuck in plain sight". */
+	public static final double[] LATERAL_SAMPLES = {-1.5, 0.0, 1.5};
+
 	/**
 	 * Finds the best cover point for a villager fleeing a player, using the
-	 * plan defaults (radii {4, 7, 10}, ±3 Y, weight 0.5).
+	 * plan defaults (radii {4, 7, 10}, ±3 Y, weight 0.5). Occlusion is sampled
+	 * from the player's eye and two points 1.5 blocks either side, so the cover
+	 * survives a sidestep; candidates beyond the villager relative to the
+	 * player are preferred.
 	 *
 	 * @return the chosen cover block position, or empty when nothing qualifies
-	 *         (the caller then freezes and acts normal).
+	 *         (the caller then acts normal, plan §3).
 	 */
 	public static Optional<BlockPos> findCover(ServerLevel level, Vec3 villagerPos, Vec3 playerEye) {
-		return search(level, villagerPos, playerEye, RADII, Y_SPREAD, PLAYER_DISTANCE_WEIGHT, true);
+		Vec3 away = villagerPos.subtract(playerEye).multiply(1.0, 0.0, 1.0);
+		Vec3 side = away.lengthSqr() < 1.0E-4 ? new Vec3(0.0, 0.0, 1.0) : new Vec3(-away.z, 0.0, away.x).normalize();
+		Vec3[] eyes = new Vec3[LATERAL_SAMPLES.length];
+		for (int i = 0; i < LATERAL_SAMPLES.length; i++) {
+			eyes[i] = playerEye.add(side.scale(LATERAL_SAMPLES[i]));
+		}
+		Vec3 fleeDir = away.lengthSqr() < 1.0E-4 ? Vec3.ZERO : away.normalize();
+		return search(level, villagerPos, eyes, RADII, Y_SPREAD, PLAYER_DISTANCE_WEIGHT, true, fleeDir);
 	}
 
 	/**
@@ -49,7 +64,7 @@ public final class CoverSearch {
 	 */
 	public static Optional<BlockPos> findRelocationPoint(ServerLevel level, Vec3 anchor, int minRadius, int maxRadius) {
 		int[] radii = {minRadius, (minRadius + maxRadius) / 2, maxRadius};
-		return search(level, anchor, anchor, radii, Y_SPREAD, 0.0, false);
+		return search(level, anchor, new Vec3[] {anchor}, radii, Y_SPREAD, 0.0, false, Vec3.ZERO);
 	}
 
 	/**
@@ -60,7 +75,8 @@ public final class CoverSearch {
 	 * @param centre   the position the ring of candidates surrounds
 	 * @param viewerEye the eye the candidates must be hidden from
 	 */
-	public static Optional<BlockPos> search(ServerLevel level, Vec3 centre, Vec3 viewerEye, int[] radii, int[] ySpread, double fleeWeight, boolean fleeWeighted) {
+	public static Optional<BlockPos> search(ServerLevel level, Vec3 centre, Vec3[] viewerEyes, int[] radii,
+			int[] ySpread, double fleeWeight, boolean fleeWeighted, Vec3 fleeDirection) {
 		Optional<BlockPos> best = Optional.empty();
 		double bestScore = Double.MAX_VALUE;
 		for (int i = 0; i < DIRECTIONS; i++) {
@@ -74,12 +90,20 @@ public final class CoverSearch {
 				int z = BlockPos.containing(cx, 0.0, cz).getZ();
 				for (int dy : ySpread) {
 					BlockPos pos = new BlockPos(x, BlockPos.containing(0.0, centre.y, 0.0).getY() + dy, z);
-					if (!isCover(level, pos, viewerEye)) {
+					if (!isCover(level, pos, viewerEyes)) {
 						continue;
 					}
 					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
 					double score = center.distanceTo(centre)
-						+ (fleeWeighted ? fleeWeight * center.distanceTo(viewerEye) : 0.0);
+						+ (fleeWeighted ? fleeWeight * center.distanceTo(viewerEyes[0]) : 0.0);
+					// Prefer candidates roughly beyond the villager from the player: cover between
+					// the two means the villager must double back through the player's view.
+					if (fleeWeighted && fleeDirection.lengthSqr() > 1.0E-4) {
+						Vec3 toCover = center.subtract(centre).multiply(1.0, 0.0, 1.0);
+						if (toCover.lengthSqr() > 1.0E-4) {
+							score += 2.0 * (1.0 - fleeDirection.normalize().dot(toCover.normalize()));
+						}
+					}
 					if (score < bestScore) {
 						bestScore = score;
 						best = Optional.of(pos);
@@ -99,7 +123,7 @@ public final class CoverSearch {
 	 * buried in a wall counts as cover (the clip to an eye inside the wall is
 	 * blocked and the block below is solid), so the villager paths into a wall.
 	 */
-	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
+	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3[] viewerEyes) {
 		BlockPos below = pos.below();
 		if (!level.getBlockState(below).isSolid()) {
 			return false;
@@ -108,7 +132,12 @@ public final class CoverSearch {
 			return false;
 		}
 		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
-		return !Senses.canSee(level, viewerEye, candidateEye);
+		for (Vec3 eye : viewerEyes) {
+			if (Senses.canSee(level, eye, candidateEye)) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** True when a villager can stand in this cell (no collision). */

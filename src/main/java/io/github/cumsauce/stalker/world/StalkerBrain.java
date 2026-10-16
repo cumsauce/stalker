@@ -154,6 +154,11 @@ public final class StalkerBrain {
 		villager.getLookControl().setLookAt(entity);
 	}
 
+	/** Looks at a plain point (the pretend-normal idle glances). */
+	public static void lookAt(Villager villager, Vec3 point) {
+		villager.getLookControl().setLookAt(point.x, point.y, point.z);
+	}
+
 	/**
 	 * Drops a villager out of the stalker entirely and hands it back to vanilla behavior: clears the
 	 * movement memories and pose, and re-applies the schedule so STALKING stops being the active
@@ -229,7 +234,7 @@ public final class StalkerBrain {
 
 		/** Minimum ticks between re-pathing a finished path (a pushed-off villager must recover, but
 		 * {@code navigation.isDone()} alone is true every tick and would re-run the A* each one). */
-		private static final long DONE_REPATH_INTERVAL_TICKS = 20;
+		private static final long DONE_REPATH_INTERVAL_TICKS = 10;
 
 		@Nullable
 		private Vec3 lastPathedTarget;

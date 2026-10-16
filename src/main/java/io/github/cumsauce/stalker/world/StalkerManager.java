@@ -44,7 +44,6 @@ public final class StalkerManager {
 	private static final int SPOTTED_LATCH_TICKS = 100;
 
 	/** Freeze fallback duration (plan §3). */
-	private static final int FREEZE_FALLBACK_TICKS = 100;
 
 	/** Peek duration (plan §3). */
 	private static final int PEEK_TICKS = 30;
@@ -75,6 +74,18 @@ public final class StalkerManager {
 
 	/** Beyond this the villager counts as fallen too far behind (plan §7). */
 	private static final double RELOCATE_DISTANCE = 128.0;
+
+	/** A cover dash that takes longer than this has failed (unreachable point) — give up on it. */
+	private static final int DASH_TIMEOUT_TICKS = 80;
+
+	/** Ticks between stuck samples (plan §2 said 60; 40 reacts faster and still avoids false positives). */
+	private static final int STUCK_SAMPLE_TICKS = 40;
+
+	/** Ticks between pretend-normal idle glances (never at the player). */
+	private static final int NORMAL_LOOK_INTERVAL_TICKS = 40;
+
+	/** Ticks a pretend-normal wander drift lasts before re-evaluating. */
+	private static final int NORMAL_WANDER_INTERVAL_TICKS = 80;
 
 	/** Require-alone radius for binding (plan tuning: requireAlone = no other player within 64). */
 	private static final double ALONE_RADIUS = 64.0;
@@ -246,6 +257,13 @@ public final class StalkerManager {
 			target = unseen ? player.position() : null;
 		}
 
+		// In view with nowhere to go: mill about like an ordinary villager instead of standing
+		// frozen and staring. This is what makes being watched survivable for the illusion.
+		if (target == null && state.spottedTicks > 0) {
+			actNormal(level, player, villager, state);
+			return;
+		}
+
 		issueMovement(villager, state, target, STALK_SPEED);
 	}
 
@@ -260,7 +278,6 @@ public final class StalkerManager {
 	private static void enterCover(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c) {
 		state.phase = Phases.Phase.COVER;
 		state.unspottedTicks = 0;
-		state.freezeTicks = 0;
 		state.peekCooldown = state.peekCooldown <= 0 ? 140 + level.getRandom().nextInt(121) : state.peekCooldown;
 		state.coverPos = null;
 		// A dash for cover is urgent: bypass the routine search throttle, otherwise a spotted
@@ -286,38 +303,33 @@ public final class StalkerManager {
 			return;
 		}
 
-		// Fake-normal freeze fallback (plan §3): nothing to hide behind.
-		if (state.freezeTicks > 0) {
-			state.freezeTicks--;
-			StalkerBrain.setTarget(villager, null, 0.0F);
-			villager.setPose(Pose.STANDING);
-			// One 1-second stare straight at the player, mid-freeze.
-			if (state.freezeTicks >= 50 && state.freezeTicks <= 70) {
-				StalkerBrain.lookAt(villager, player);
-			}
-			if (state.freezeTicks == 0) {
-				state.phase = Phases.Phase.STALK;
-				state.spottedTicks = 0;
-			}
-			return;
-		}
-
-		// The player walked into the hiding spot: new cover or freeze (plan §3).
+		// The player walked into the hiding spot: new cover or act normal (plan §3).
 		if (state.coverPos == null
 			|| Vec3.atLowerCornerOf(state.coverPos).add(0.5, 0.0, 0.5).distanceTo(player.position()) < COVER_DISTURB_DISTANCE) {
 			if (!findCoverNow(level, player, villager, state, c)) {
-				state.freezeTicks = FREEZE_FALLBACK_TICKS;
+				actNormal(level, player, villager, state);
 				return;
 			}
+			state.dashTicks = 0;
 		}
 
 		Vec3 coverCenter = Vec3.atLowerCornerOf(state.coverPos).add(0.5, 0.0, 0.5);
 		if (villager.position().distanceTo(coverCenter) > AT_COVER_DISTANCE) {
-			// Sprint to the cover point.
+			// Sprint to the cover point; a dash that outlives its timeout is unreachable, so drop
+			// the point (the next search picks a different candidate) and act normal meanwhile.
 			villager.setPose(Pose.STANDING);
+			state.dashTicks++;
+			if (state.dashTicks > DASH_TIMEOUT_TICKS) {
+				state.coverPos = null;
+				state.resetMovement();
+				StalkerBrain.setTarget(villager, null, 0.0F);
+				actNormal(level, player, villager, state);
+				return;
+			}
 			issueMovement(villager, state, coverCenter, COVER_SPRINT_SPEED);
 			return;
 		}
+		state.dashTicks = 0;
 
 		// Hidden at cover.
 		StalkerBrain.setTarget(villager, null, 0.0F);
@@ -357,6 +369,56 @@ public final class StalkerManager {
 			}
 		} else {
 			state.unspottedTicks = 0;
+		}
+	}
+
+	/**
+	 * The pretend-normal fallback (plan §3), rewritten from play feedback: the villager was caught
+	 * in the open with no usable cover, so instead of standing frozen and staring it mills about
+	 * like an ordinary villager — slow drifts away from the player, idle glances at random points,
+	 * never a fixed stare. It stays in this mode while it is being watched (spotted) and resumes
+	 * stalking through the normal unspotted exit.
+	 */
+	private static void actNormal(ServerLevel level, ServerPlayer player, Villager villager, State state) {
+		villager.setPose(Pose.STANDING);
+
+		// Drift: every so often wander a couple of blocks to a neutral point, biased away from the
+		// player, then stop and idle.
+		if (state.normalWanderTarget != null) {
+			if (villager.position().distanceTo(state.normalWanderTarget) < 1.0) {
+				state.normalWanderTarget = null;
+				issueMovement(villager, state, null, STALK_SPEED);
+			} else if (state.dashTicks++ > NORMAL_WANDER_INTERVAL_TICKS) {
+				state.normalWanderTarget = null;
+				issueMovement(villager, state, null, STALK_SPEED);
+			}
+		} else if (state.normalWanderTicks > 0) {
+			state.normalWanderTicks--;
+			if (state.normalWanderTicks == 0 && level.getRandom().nextInt(3) == 0) {
+				Vec3 away = villager.position().subtract(player.position()).multiply(1.0, 0.0, 1.0);
+				Vec3 dir = away.lengthSqr() < 1.0E-4
+					? new Vec3(Math.cos(level.getRandom().nextDouble() * Math.PI * 2.0), 0.0,
+						Math.sin(level.getRandom().nextDouble() * Math.PI * 2.0))
+					: away.normalize();
+				Vec3 side = new Vec3(-dir.z, 0.0, dir.x).scale((level.getRandom().nextDouble() - 0.5) * 2.0);
+				Vec3 drift = villager.position().add(dir.scale(2.0 + level.getRandom().nextInt(3))).add(side);
+				state.normalWanderTarget = drift;
+				state.dashTicks = 0;
+				issueMovement(villager, state, drift, 0.7F);
+			}
+		} else {
+			state.normalWanderTicks = NORMAL_WANDER_INTERVAL_TICKS;
+		}
+
+		// Idle glances: random nearby points on a slow cadence, never straight at the player.
+		if (state.normalLookTicks <= 0) {
+			state.normalLookTicks = NORMAL_LOOK_INTERVAL_TICKS + level.getRandom().nextInt(NORMAL_LOOK_INTERVAL_TICKS);
+			double angle = level.getRandom().nextDouble() * Math.PI * 2.0;
+			double dist = 3.0 + level.getRandom().nextInt(6);
+			StalkerBrain.lookAt(villager, villager.position().add(
+				Math.cos(angle) * dist, 1.0 + level.getRandom().nextDouble() * 1.5, Math.sin(angle) * dist));
+		} else {
+			state.normalLookTicks--;
 		}
 	}
 
@@ -466,7 +528,7 @@ public final class StalkerManager {
 	// ----------------------------------------------------------- stuck / move
 
 	private static void tickStuckCheck(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c) {
-		if (state.stuckSampleTicks++ < 60) {
+		if (state.stuckSampleTicks++ < STUCK_SAMPLE_TICKS) {
 			return;
 		}
 		state.stuckSampleTicks = 0;
@@ -486,6 +548,9 @@ public final class StalkerManager {
 		if (villager.horizontalCollision) {
 			villager.jumpFromGround();
 		}
+		// Drop the current path so a fresh one is computed for the same target; otherwise the
+		// navigation keeps replaying a route the villager demonstrably cannot follow.
+		villager.getNavigation().stop();
 		state.stuckCycles++;
 		if (state.stuckCycles >= 2) {
 			// One-time catch-up teleport, same rules as relocation (plan §2).
@@ -776,7 +841,6 @@ public final class StalkerManager {
 		}
 		sb.append(" spotted=").append(state.spottedTicks)
 			.append(" cover=").append(state.coverPos)
-			.append(" freeze=").append(state.freezeTicks)
 			.append(" stun=").append(state.stunTicks)
 			.append(" strikeCooldown=").append(state.strikeCooldown)
 			.append(" relocateTicks=").append(state.relocateTicks);
@@ -791,7 +855,6 @@ public final class StalkerManager {
 		}
 		state.phase = phase;
 		state.spottedTicks = 0;
-		state.freezeTicks = 0;
 		state.unspottedTicks = 0;
 		if (phase == Phases.Phase.STUN) {
 			state.stunTicks = StalkerConfig.get().stunDurationTicks();
@@ -947,7 +1010,6 @@ public final class StalkerManager {
 		Phases.Phase phase = Phases.Phase.STALK;
 		int spottedTicks;
 		int unspottedTicks;
-		int freezeTicks;
 		int peekCooldown;
 		int peekTicks;
 		boolean peekSide;
@@ -966,6 +1028,13 @@ public final class StalkerManager {
 		int stuckSampleTicks;
 		int stuckCycles;
 		Vec3 lastSampledPos;
+		// Pretend-normal mode (plan §3 fallback): spotted with no usable cover, so act like an
+		// ordinary villager until the player looks away instead of freezing in plain sight.
+		int normalLookTicks;
+		int normalWanderTicks;
+		Vec3 normalWanderTarget;
+		// Ticks spent sprinting at the current cover point; too long means it is unreachable.
+		int dashTicks;
 
 		State(UUID villagerId) {
 			this.villagerId = villagerId;
@@ -981,6 +1050,10 @@ public final class StalkerManager {
 			lastTarget = null;
 			wantsToMove = false;
 			ticksSinceIssue = 0;
+			normalWanderTicks = 0;
+			normalWanderTarget = null;
+			normalLookTicks = 0;
+			dashTicks = 0;
 		}
 	}
 }
