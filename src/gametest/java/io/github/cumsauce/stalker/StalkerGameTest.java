@@ -29,6 +29,34 @@ public class StalkerGameTest {
 		});
 	}
 
+	@GameTest(maxTicks = 80)
+	public void hamletBuildsBellAndVillagers(net.minecraft.gametest.framework.GameTestHelper helper) {
+		var spawned = io.github.cumsauce.stalker.world.VillagerSpawner.buildHamlet(
+				helper.getLevel(), helper.absoluteVec(new net.minecraft.world.phys.Vec3(4.5, 1.0, 4.5)),
+				2, helper.getLevel().getRandom());
+		helper.runAfterDelay(10, () -> {
+			if (spawned.size() < 2) {
+				helper.fail("hamlet spawned " + spawned.size() + " villagers, wanted 2");
+				return;
+			}
+			// A bell must exist in the centre column somewhere above ground (the ground level of a
+			// gametest structure varies, so scan the column rather than hard-coding a Y).
+			boolean bellFound = false;
+			for (int y = 0; y < 30; y++) {
+				var pos = helper.absolutePos(new net.minecraft.core.BlockPos(4, y, 4));
+				if (helper.getLevel().getBlockState(pos).is(net.minecraft.world.level.block.Blocks.BELL)) {
+					bellFound = true;
+					break;
+				}
+			}
+			if (!bellFound) {
+				helper.fail("no bell found in the hamlet centre column");
+				return;
+			}
+			helper.succeed();
+		});
+	}
+
 	@GameTest(maxTicks = 60)
 	public void spawnRingSpawnsEmployedVillagers(net.minecraft.gametest.framework.GameTestHelper helper) {
 		var spawned = io.github.cumsauce.stalker.world.VillagerSpawner.spawnRing(

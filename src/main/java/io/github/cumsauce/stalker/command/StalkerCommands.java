@@ -81,6 +81,13 @@ public final class StalkerCommands {
 								.executes(context -> reply(context.getSource(),
 										spawn(source(context),
 												com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "count")),
+												true))))
+				.then(Commands.literal("village")
+						.executes(context -> reply(context.getSource(), village(source(context), 4), true))
+						.then(Commands.argument("huts", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 8))
+								.executes(context -> reply(context.getSource(),
+										village(source(context),
+												com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "huts")),
 												true))));
 		dispatcher.register(root);
 	}
@@ -91,6 +98,21 @@ public final class StalkerCommands {
 	 * to be found or built by hand to exercise the mod. Jobs are drawn from the profession registry
 	 * (nitwits and the unemployed filtered out); ground is taken from the motion-blocking heightmap.
 	 */
+	/**
+	 * Debug helper ({@code /stalker village [huts]}): builds a bell, {@code huts} simple huts (door,
+	 * bed, torch, roof) and one employed villager per hut around the player. Block-level, so it
+	 * replaces what is there — meant for empty-ish ground, not for your base.
+	 */
+	private static String village(ServerPlayer player, int huts) {
+		if (!(player.level() instanceof ServerLevel level)) {
+			return "not in a server level.";
+		}
+		List<String> professions = VillagerSpawner.buildHamlet(level, player.position(), huts, level.getRandom());
+		return "Built a hamlet (bell + " + huts + " hut(s)) around " + player.getName().getString()
+				+ " with " + professions.size() + " villager(s)"
+				+ (professions.isEmpty() ? "" : ": " + String.join(", ", professions));
+	}
+
 	private static String spawn(ServerPlayer player, int count) {
 		if (!(player.level() instanceof ServerLevel level)) {
 			return "not in a server level.";
