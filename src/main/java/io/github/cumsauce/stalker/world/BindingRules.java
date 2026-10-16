@@ -1,6 +1,7 @@
 package io.github.cumsauce.stalker.world;
 
 import java.util.UUID;
+import net.minecraft.world.entity.Entity;
 
 /**
  * The bind-eligibility decision, as pure logic so it can be unit tested without a live server.
@@ -52,5 +53,14 @@ public final class BindingRules {
 			return false;
 		}
 		return !blacklisted;
+	}
+
+	/**
+	 * Whether an entity removal should end the villager's binding. Only removals that destroy the
+	 * entity do (killed, discarded — lightning conversion, /kill, despawn). Chunk unloads and
+	 * dimension changes keep it (plan §7: bindings survive both), as does a null reason.
+	 */
+	public static boolean removalEndsBinding(Entity.RemovalReason reason) {
+		return reason != null && reason.shouldDestroy();
 	}
 }

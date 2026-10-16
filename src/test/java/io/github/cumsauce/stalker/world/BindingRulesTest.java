@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.cumsauce.stalker.world.BindingRules.Owner;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import net.minecraft.world.entity.Entity;
 
 /**
  * The bind-eligibility rule. These pin a real bug: a one-sided binding used to make a villager
@@ -70,5 +71,35 @@ class BindingRulesTest {
 	@DisplayName("a baby is refused even with a stale binding")
 	void babyBeatsStaleBinding() {
 		assertFalse(BindingRules.isEligible(true, true, Owner.DISOWNED, false));
+	}
+
+	@Test
+	void killedEndsBinding() {
+		assertTrue(BindingRules.removalEndsBinding(Entity.RemovalReason.KILLED));
+	}
+
+	@Test
+	void discardedEndsBinding() {
+		assertTrue(BindingRules.removalEndsBinding(Entity.RemovalReason.DISCARDED));
+	}
+
+	@Test
+	void chunkUnloadKeepsBinding() {
+		assertFalse(BindingRules.removalEndsBinding(Entity.RemovalReason.UNLOADED_TO_CHUNK));
+	}
+
+	@Test
+	void playerUnloadKeepsBinding() {
+		assertFalse(BindingRules.removalEndsBinding(Entity.RemovalReason.UNLOADED_WITH_PLAYER));
+	}
+
+	@Test
+	void dimensionChangeKeepsBinding() {
+		assertFalse(BindingRules.removalEndsBinding(Entity.RemovalReason.CHANGED_DIMENSION));
+	}
+
+	@Test
+	void noReasonKeepsBinding() {
+		assertFalse(BindingRules.removalEndsBinding(null));
 	}
 }

@@ -85,10 +85,7 @@ public final class Strikes {
 	 * with probability {@code teleportChance}, otherwise variant B — the chase.
 	 */
 	public static void strike(Villager villager, ServerPlayer player) {
-		// The tell: face the victim, sting, camera snap.
-		villager.getLookControl().setLookAt(player);
-		Cues.strikeTell(villager);
-		Net.strikeTell(player, villager, TELL_SNAP_TICKS);
+		tell(villager, player);
 
 		// Foley layer: a villager shriek on top of the sting. A scream is an event tell — it comes
 		// from the villager's true position, not the lie layer. Gated server-side on the config so
@@ -104,6 +101,27 @@ public final class Strikes {
 		} else {
 			chase(villager, player);
 		}
+	}
+
+	/**
+	 * A strike that is always variant B (chase): the full tell, then the chase, no snatch roll.
+	 * Used for the pretend-bribe betrayal (plan §6: "CHASE, variant B forced, tell and all") and
+	 * for {@code /stalker strike}.
+	 */
+	public static void strikeChase(Villager villager, ServerPlayer player) {
+		tell(villager, player);
+		if (VoiceCues.shouldScream(StalkerConfig.get().foleyVoices())) {
+			Net.voiceCue(player, villager.getX(), villager.getY(), villager.getZ(),
+					VoiceCues.VoiceCue.SCREAM, VoiceCues.screamPitch(VoiceCues.newDraw()), VoiceCues.SCREAM_VOLUME);
+		}
+		chase(villager, player);
+	}
+
+	/** The tell shared by both strike entry points: face the victim, sting, camera snap. */
+	private static void tell(Villager villager, ServerPlayer player) {
+		villager.getLookControl().setLookAt(player);
+		Cues.strikeTell(villager);
+		Net.strikeTell(player, villager, TELL_SNAP_TICKS);
 	}
 
 	/** Variant A (15 %): darkness, the player is teleported ~100 blocks, binding ends satisfied. */

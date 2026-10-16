@@ -1,6 +1,7 @@
 package io.github.cumsauce.stalker.world;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -8,6 +9,10 @@ import java.util.UUID;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
@@ -56,6 +61,10 @@ public final class StalkerManager {
 
 	/** Peek duration (plan §3). */
 	private static final int PEEK_TICKS = 30;
+
+	/** How far from the cover centre counts as "still at cover" while hidden; beyond it (after a
+	 * peek) the villager steps back to the centre. Smaller than the 0.75 sidestep. */
+	private static final double PEEK_RETURN_DISTANCE = 0.5;
 
 	/** Cover search throttle: one search per 2 s per villager (plan §3). */
 	private static final int COVER_SEARCH_COOLDOWN = 40;
@@ -145,6 +154,9 @@ public final class StalkerManager {
 	/** Ticks of total unresolved absence before an orphaned binding is dropped (plan §7 gives no key; 2× relocateBehindTicks). */
 	private static final int ORPHAN_UNBIND_TICKS = 1200;
 
+	/** Longest a villager's last chunk stays force-loaded waiting for it to appear for relocation. */
+	private static final int FORCE_LOAD_MAX_TICKS = 200;
+
 	/** Stalking-mumble audibility cap: the low mumble stops at this distance regardless of phase (plan §5). */
 	private static final double MUMBLE_MAX_DISTANCE = 32.0;
 
@@ -194,7 +206,13 @@ public final class StalkerManager {
 		// The cover constellation is static and ages on level game time, which restarts low on each
 		// load; without this, traces from the previous world never expire and evict the new world's
 		// marks. Server stop covers both singleplayer and dedicated teardown.
-		ServerLifecycleEvents.SERVER_STOPPING.register(server -> CoverTrace.reset());
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			CoverTrace.reset();
+			// Forced chunks are saved with the level; never let one outlive the State that asked for it.
+			for (State state : STATES.values()) {
+				releaseForcedChunk(server, state);
+			}
+		});
 		// Drop per-player bookkeeping when a player leaves: the tick loop only sees online players,
 		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever;
 		// the same goes for the debug-particle toggle. The manager State is dropped too — it is
@@ -205,17 +223,28 @@ public final class StalkerManager {
 			ServerPlayer player = handler.getPlayer();
 			if (player != null) {
 				Strikes.clear(player);
-				STATES.remove(player.getUUID());
+				discardState(server, player.getUUID());
 				DEBUG_PLAYERS.remove(player.getUUID());
 			}
 		});
 		// Instant villager removals (lightning conversion, /kill, chunk-level despawn) never let the
 		// per-tick !isAlive() check in tickStalker run, so the binding would otherwise linger until
 		// the 1200-tick orphan clock fires dropPlayerSide — an unbind with NO blacklist, violating
-		// plan-S1 (convert => unbind + blacklist). ENTITY_UNLOAD catches those removals directly.
+		// plan-S1 (convert => unbind + blacklist). ENTITY_UNLOAD catches those removals directly —
+		// but it also fires for chunk unloads and dimension changes, which must keep the binding
+		// (plan §7), so only destroying removal reasons end it.
 		ServerEntityEvents.ENTITY_UNLOAD.register((entity, level) -> {
-			if (entity instanceof Villager villager) {
+			if (entity instanceof Villager villager
+				&& BindingRules.removalEndsBinding(villager.getRemovalReason())) {
 				onVillagerRemoved(level, villager);
+			}
+		});
+		// The stalking memories are codec-backed and saved with the villager, so one that unloaded
+		// mid-walk comes back still heading for a stale point; and a one-sided binding (owner gone
+		// or no longer claiming it) would otherwise only be healed when a bind roll happens to scan it.
+		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
+			if (entity instanceof Villager villager) {
+				onVillagerLoaded(level, villager);
 			}
 		});
 	}
@@ -384,28 +413,31 @@ public final class StalkerManager {
 		boolean advancing = state.advanceTicks > 0;
 
 		Vec3 target;
+		boolean holdingAtCover = false;
+		boolean outsideAmbushRange = distance > c.strikeRange() * Ambush.RANGE_FACTOR;
 		if (advancing) {
-			// Committed advance: walk the committed hop plan (built through cover, legs out of
-			// sight) and rebuild it only when it is spent, stale, or the player has moved away
-			// from where it was planned. This is what makes the approach look thought out.
+			// Hop by hop through cover toward the plan target (intercept point, or the last place the
+			// player was seen); nextPlanHop returns the plan target itself when no hop fits.
 			target = nextPlanHop(level, player, villager, state);
-			if (target == null) {
-				target = player.position();
-			}
-		} else if (distance >= c.orbitInner()) {
-			// Watched inside the orbit: seek cover and watch from it.
+		} else if (outsideAmbushRange) {
+			// Not advancing and not yet in ambush range: get behind cover and watch from there
+			// (plan §2: inside 12 blocks, hold behind cover). Standing still at cover is the hold.
 			Optional<BlockPos> cover = ensureCover(level, player, villager, state, c);
-			target = cover
+			Vec3 coverCenter = cover
 				.map(pos -> Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5))
-				.filter(pos -> pos.distanceTo(villager.position()) > MIN_COVER_DISTANCE)
 				.orElse(null);
+			holdingAtCover = coverCenter != null
+				&& coverCenter.distanceTo(villager.position()) <= MIN_COVER_DISTANCE;
+			target = holdingAtCover ? null : coverCenter;
 		} else {
+			// Inside ambush range and unspotted: stand still; tickAmbush is counting.
 			target = null;
 		}
 
-		// In view with nowhere to go: mill about like an ordinary villager instead of standing
-		// frozen and staring. This is what makes being watched survivable for the illusion.
-		if (target == null && state.spottedTicks > 0) {
+		// Nothing to walk to: when spotted, or when there is simply no cover to use, act like an
+		// ordinary villager (plan §3) instead of standing frozen. Holding at cover and the ambush
+		// stillness are the two deliberate stand-stills.
+		if (target == null && (state.spottedTicks > 0 || (outsideAmbushRange && !holdingAtCover))) {
 			actNormal(level, player, villager, state);
 			return;
 		}
@@ -485,7 +517,7 @@ public final class StalkerManager {
 	}
 
 	/**
-	 * The next hop of the committed approach plan, or null when there is none. The plan is a queue
+	 * The next hop of the committed approach plan, or the plan target itself when no hop fits. The plan is a queue
 	 * of cover hops built by {@link ApproachPlanner} — each hop makes progress toward the player
 	 * and every leg between hops stays out of the player's sight (or is short enough to dash).
 	 * It is rebuilt when spent, when the player strays from the anchor it was planned against,
@@ -520,7 +552,8 @@ public final class StalkerManager {
 		// rebuild runs every tick of every committed advance. Keep the current plan (or the direct
 		// fallback) meanwhile.
 		if (state.planRebuildCooldown > 0) {
-			return state.plan.peek();
+			Vec3 pending = state.plan.peek();
+			return pending != null ? pending : planTarget;
 		}
 		// Candidates are ranked by hiddenness versus the distance they add (plan feedback: pick the
 		// best spot by how hidden it is, not just the nearest), and the planner walks them in that
@@ -557,7 +590,7 @@ public final class StalkerManager {
 		state.planAge = 0;
 		state.planRebuildCooldown = PLAN_REBUILD_COOLDOWN_TICKS;
 		Vec3 hop = state.plan.peek();
-		return hop == null ? null : hop;
+		return hop == null ? planTarget : hop;
 	}
 
 	/** Unseen-approach gate (plan §2): player looking away (dot ≤ 0.35) or LOS blocked. The cached
@@ -623,6 +656,7 @@ public final class StalkerManager {
 				// coverPos, which would skip the unspotted-exit below and wedge the phase here.
 				state.phase = Phases.Phase.STALK;
 				state.coverPos = null;
+				state.failedCover.clear();
 				state.resetMovement();
 				return;
 			}
@@ -636,6 +670,7 @@ public final class StalkerManager {
 			villager.setPose(Pose.STANDING);
 			state.dashTicks++;
 			if (state.dashTicks > DASH_TIMEOUT_TICKS) {
+				state.failedCover.add(state.coverPos);
 				state.coverPos = null;
 				state.resetMovement();
 				StalkerBrain.setTarget(villager, null, 0.0F);
@@ -646,32 +681,39 @@ public final class StalkerManager {
 			return;
 		}
 		state.dashTicks = 0;
+		state.failedCover.clear();
 
-		// Hidden at cover.
-		StalkerBrain.setTarget(villager, null, 0.0F);
+		// Hidden at cover. Hold at the cover centre — except mid-peek: erasing the move target every
+		// tick would stop the sidestep issued below the moment it starts. After a peek, step back.
+		if (state.peekTicks <= 0) {
+			if (villager.position().distanceTo(coverCenter) > PEEK_RETURN_DISTANCE) {
+				state.lastTarget = null;
+				issueMovement(villager, state, coverCenter, STALK_SPEED);
+			} else {
+				issueMovement(villager, state, null, 0.0F);
+			}
+		}
 		villager.setPose(Pose.CROUCHING);
 
-		// Peeking (plan §3): player near, not looking at the cover point.
-		if (distance <= PEEK_PLAYER_RANGE && !Senses.lookingAtPos(player, coverCenter.add(0.0, 1.0, 0.0), c.spottedAngleDeg())) {
-			if (state.peekTicks > 0) {
-				state.peekTicks--;
-				StalkerBrain.lookAt(villager, player);
-				// Sidestep ~0.75 blocks out the open side, then back.
-				Vec3 away = villager.position().subtract(player.position());
-				Vec3 side = new Vec3(-away.z, 0.0, away.x).normalize().scale(0.75);
-				Vec3 peekTarget = coverCenter.add(state.peekSide ? side : side.scale(-1.0));
-				issueMovement(villager, state, peekTarget, STALK_SPEED);
-				if (state.peekTicks == 0) {
-					issueMovement(villager, state, coverCenter, STALK_SPEED);
-				}
-			} else {
-				state.peekCooldown--;
-				if (state.peekCooldown <= 0) {
-					state.peekTicks = PEEK_TICKS;
-					state.peekSide = level.getRandom().nextBoolean();
-					state.peekCooldown = rollPeekCooldown(level);
-					Cues.peek(villager);
-				}
+		boolean watched = Senses.lookingAtPos(player, coverCenter.add(0.0, 1.0, 0.0), c.spottedAngleDeg());
+		if (watched || distance > PEEK_PLAYER_RANGE) {
+			// Caught leaning out (or too far to bother): end the peek now; the block above ducks back.
+			state.peekTicks = 0;
+		} else if (state.peekTicks > 0) {
+			state.peekTicks--;
+			StalkerBrain.lookAt(villager, player);
+
+			Vec3 away = villager.position().subtract(player.position());
+			Vec3 side = new Vec3(-away.z, 0.0, away.x).normalize().scale(0.75);
+			Vec3 peekTarget = coverCenter.add(state.peekSide ? side : side.scale(-1.0));
+			issueMovement(villager, state, peekTarget, STALK_SPEED);
+		} else {
+			state.peekCooldown--;
+			if (state.peekCooldown <= 0) {
+				state.peekTicks = PEEK_TICKS;
+				state.peekSide = level.getRandom().nextBoolean();
+				state.peekCooldown = rollPeekCooldown(level);
+				Cues.peek(villager);
 			}
 		}
 
@@ -682,6 +724,7 @@ public final class StalkerManager {
 				state.phase = Phases.Phase.STALK;
 				villager.setPose(Pose.STANDING);
 				state.coverPos = null;
+				state.failedCover.clear();
 				state.resetMovement();
 			}
 		} else {
@@ -757,6 +800,9 @@ public final class StalkerManager {
 			if (probes >= 3) {
 				break;
 			}
+			if (state.failedCover.contains(candidate)) {
+				continue;
+			}
 			probes++;
 			if (villager.getNavigation().createPath(candidate, 0) != null) {
 				state.coverPos = candidate;
@@ -768,7 +814,10 @@ public final class StalkerManager {
 		}
 		// Nothing reachable: fall back to the best-scoring candidate anyway (approaching it may
 		// still improve the situation, and acting normal with zero cover is worse).
-		state.coverPos = candidates.isEmpty() ? null : candidates.get(0);
+		state.coverPos = candidates.stream()
+			.filter(candidate -> !state.failedCover.contains(candidate))
+			.findFirst()
+			.orElse(null);
 		if (state.coverPos != null) {
 			CoverTrace.mark(level, state.coverPos, villager.getRandom());
 		}
@@ -957,25 +1006,46 @@ public final class StalkerManager {
 		Entity inLevel = level.getEntity(state.villagerId);
 		if (inLevel instanceof Villager villager) {
 			state.unloadedTicks = 0;
+			state.lastKnownPos = villager.blockPosition();
+			state.lastKnownLevel = level.dimension();
+			releaseForcedChunk(level.getServer(), state);
 			tickStuckCheck(villager, state);
 			return villager;
 		}
-		// Not in the player's dimension (or chunk-unloaded).
+
 		state.unloadedTicks++;
 		Entity anywhere = level.getEntityInAnyDimension(state.villagerId);
 		if (anywhere instanceof Villager villager) {
+			state.lastKnownPos = villager.blockPosition();
+			state.lastKnownLevel = villager.level().dimension();
 			if (state.unloadedTicks > c.relocateBehindTicks() && relocate(villager, player, level, c)) {
 				state.unloadedTicks = 0;
+				releaseForcedChunk(level.getServer(), state);
 				return villager;
 			}
-			// Cross-dimension villager exists but is not due for relocation yet.
+			// Loaded but elsewhere (other dimension, or far behind): keep ticking until relocation is due.
 			return null;
 		}
-		// Fully unloaded (or converted/removed): the removal hook clears the
-		// attachment; this clock is the quiet fallback for orphans.
+
+		// Not loaded anywhere. Once relocation is due, force-load the chunk it was last seen in so it
+		// reappears for the branch above (plan §7: an unloaded villager relocates, it is not dropped).
+		// The force is bounded and released by every path that discards this State.
+		if (state.unloadedTicks > c.relocateBehindTicks() && state.forcedChunk == null
+			&& state.lastKnownPos != null && state.lastKnownLevel != null) {
+			ServerLevel home = level.getServer().getLevel(state.lastKnownLevel);
+			ChunkPos chunk = ChunkPos.containing(state.lastKnownPos);
+			if (home != null && home.setChunkForced(chunk.x(), chunk.z(), true)) {
+				state.forcedChunk = chunk;
+				state.forcedLevel = state.lastKnownLevel;
+				state.forcedTicks = 0;
+			}
+		}
+		if (state.forcedChunk != null && ++state.forcedTicks > FORCE_LOAD_MAX_TICKS) {
+			releaseForcedChunk(level.getServer(), state);
+		}
+
 		if (state.unloadedTicks > ORPHAN_UNBIND_TICKS) {
 			dropPlayerSide(player);
-			STATES.remove(player.getUUID());
 		}
 		return null;
 	}
@@ -1048,6 +1118,7 @@ public final class StalkerManager {
 		// A stale one-sided binding is healed rather than left to make the villager ineligible forever.
 		if (isBound && !BindingRules.bindingIsLive(owner)) {
 			Attachments.unbindVillager(villager);
+			StalkerBrain.release(villager);
 		}
 		return BindingRules.isEligible(villager.isBaby(), isBound,
 			owner, Attachments.isBlacklisted(level, player, villager.getUUID()));
@@ -1165,7 +1236,7 @@ public final class StalkerManager {
 	 * removes the state and the player-side attachment that the second one reads the villager UUID from.
 	 */
 	public static void unbind(ServerPlayer player, boolean blacklist) {
-		State state = STATES.remove(player.getUUID());
+		State state = discardState(player.level().getServer(), player.getUUID());
 		// The villager UUID comes from the state, falling back to the player-side attachment: after a
 		// reload the state is rebuilt lazily, so /stalker stop on a fresh session would otherwise
 		// clear only the player's side and leave the villager bound (and ineligible) forever.
@@ -1252,7 +1323,7 @@ public final class StalkerManager {
 			return;
 		}
 		if (level.getEntity(state.villagerId) instanceof Villager villager) {
-			Strikes.strike(villager, player);
+			Strikes.strikeChase(villager, player);
 		}
 	}
 
@@ -1309,6 +1380,21 @@ public final class StalkerManager {
 		}
 	}
 
+	/**
+	 * A villager (re)entering a loaded chunk: drop any persisted move target — the manager
+	 * re-issues one on its next tick if the villager is still bound and in range — and heal a
+	 * one-sided binding so the villager is not stuck ineligible and in the STALKING activity.
+	 */
+	public static void onVillagerLoaded(ServerLevel level, Villager villager) {
+		if (StalkerBrain.isHandling(villager)) {
+			StalkerBrain.setTarget(villager, null, 0.0F);
+		}
+		if (Attachments.isBound(villager) && !BindingRules.bindingIsLive(ownerState(level, villager))) {
+			Attachments.unbindVillager(villager);
+			StalkerBrain.release(villager);
+		}
+	}
+
 	/** Called by the {@code ENTITY_UNLOAD} hook when a bound villager is removed (plan §1). */
 	public static void onVillagerRemoved(ServerLevel level, Villager villager) {
 		UUID villagerId = villager.getUUID();
@@ -1324,7 +1410,7 @@ public final class StalkerManager {
 		if (boundPlayer == null) {
 			return;
 		}
-		STATES.remove(boundPlayer);
+		discardState(level.getServer(), boundPlayer);
 		ServerPlayer player = level.getServer().getPlayerList().getPlayer(boundPlayer);
 		if (player != null) {
 			Attachments.unbindPlayer(player);
@@ -1335,7 +1421,7 @@ public final class StalkerManager {
 	// ----------------------------------------------------------------- misc
 
 	private static void dropBinding(ServerLevel level, ServerPlayer player, State state, boolean blacklist, boolean villagerSide) {
-		STATES.remove(player.getUUID());
+		discardState(level.getServer(), player.getUUID());
 		if (blacklist) {
 			Attachments.blacklist(level, player, state.villagerId, StalkerConfig.get().blacklistTicks());
 		}
@@ -1348,7 +1434,7 @@ public final class StalkerManager {
 	}
 
 	private static void dropVillagerSide(ServerPlayer player) {
-		State state = STATES.remove(player.getUUID());
+		State state = discardState(player.level().getServer(), player.getUUID());
 		Attachments.unbindPlayer(player);
 		Strikes.clear(player);
 		if (state != null && player.level() instanceof ServerLevel level
@@ -1360,8 +1446,30 @@ public final class StalkerManager {
 		}
 	}
 
+	/** Removes a player's State and releases any chunk it had force-loaded. All State removals go through here. */
+	private static State discardState(MinecraftServer server, UUID playerId) {
+		State state = STATES.remove(playerId);
+		if (state != null) {
+			releaseForcedChunk(server, state);
+		}
+		return state;
+	}
+
+	private static void releaseForcedChunk(MinecraftServer server, State state) {
+		if (state.forcedChunk == null) {
+			return;
+		}
+		ServerLevel forcedIn = state.forcedLevel == null ? null : server.getLevel(state.forcedLevel);
+		if (forcedIn != null) {
+			forcedIn.setChunkForced(state.forcedChunk.x(), state.forcedChunk.z(), false);
+		}
+		state.forcedChunk = null;
+		state.forcedLevel = null;
+		state.forcedTicks = 0;
+	}
+
 	private static void dropPlayerSide(ServerPlayer player) {
-		STATES.remove(player.getUUID());
+		discardState(player.level().getServer(), player.getUUID());
 		Attachments.unbindPlayer(player);
 		Strikes.clear(player);
 	}
@@ -1383,10 +1491,19 @@ public final class StalkerManager {
 		boolean peekSide;
 		int coverSearchCooldown;
 		BlockPos coverPos;
+		/** Cover positions the villager timed out dashing to this COVER phase; skipped on re-search. */
+		final Set<BlockPos> failedCover = new HashSet<>();
 		int strikeCooldown;
 		int stunTicks;
 		int chaseTicks;
 		int unloadedTicks;
+		/** Where the villager last was while loaded, for force-loading its chunk when it goes missing. */
+		BlockPos lastKnownPos;
+		ResourceKey<Level> lastKnownLevel;
+		/** The chunk currently force-loaded on this binding's behalf, or null. */
+		ChunkPos forcedChunk;
+		ResourceKey<Level> forcedLevel;
+		int forcedTicks;
 		int mumbleCooldown;
 		int footstepCooldown;
 		int heartbeatCooldown;
