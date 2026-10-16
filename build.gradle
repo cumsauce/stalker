@@ -11,6 +11,12 @@ dependencies {
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
+	// Foley's thin api-only jar (mod id foley-api: io.github.cumsauce.foley.api, "environment": "*").
+	// Foley's docs say bundling even this thin api jar would be fine — but we don't bundle anything:
+	// compile-only, so no copy of Foley or its api ships with stalker. At runtime the types resolve
+	// only when Foley (which jar-in-jars foley-api) is installed; see StalkerFoley's mod-present gate.
+	compileOnly files('libs/foley-api.jar')
+
 	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
 	testImplementation 'org.junit.jupiter:junit-jupiter'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

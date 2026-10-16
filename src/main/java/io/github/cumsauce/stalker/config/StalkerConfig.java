@@ -59,7 +59,8 @@ public record StalkerConfig(
 		int chaseHeartbeatIntervalTicks,
 		double chaseHeartbeatVolume,
 		int pretendChaseMinDelayTicks,
-		int pretendChaseMaxDelayTicks) {
+		int pretendChaseMaxDelayTicks,
+		boolean foleyVoices) {
 	public static final StalkerConfig DEFAULT = new StalkerConfig(
 			0.004, 48, false, false,
 			12, 24,
@@ -75,7 +76,7 @@ public record StalkerConfig(
 			600, 1400, 0.25,
 			100, 0.6, 8, 20,
 			30, 0.8,
-			40, 80);
+			40, 80, true);
 
 	private static Path file() {
 		return FabricLoader.getInstance().getConfigDir().resolve("stalker.json");
@@ -181,7 +182,8 @@ public record StalkerConfig(
 				integer(json, "chaseHeartbeatIntervalTicks", d.chaseHeartbeatIntervalTicks),
 				num(json, "chaseHeartbeatVolume", d.chaseHeartbeatVolume),
 				integer(json, "pretendChaseMinDelayTicks", d.pretendChaseMinDelayTicks),
-				integer(json, "pretendChaseMaxDelayTicks", d.pretendChaseMaxDelayTicks));
+				integer(json, "pretendChaseMaxDelayTicks", d.pretendChaseMaxDelayTicks),
+				flag(json, "foleyVoices", d.foleyVoices()));
 	}
 
 	JsonObject toJson() {
@@ -227,6 +229,7 @@ public record StalkerConfig(
 		json.addProperty("chaseHeartbeatVolume", chaseHeartbeatVolume);
 		json.addProperty("pretendChaseMinDelayTicks", pretendChaseMinDelayTicks);
 		json.addProperty("pretendChaseMaxDelayTicks", pretendChaseMaxDelayTicks);
+		json.addProperty("foleyVoices", foleyVoices);
 		return json;
 	}
 

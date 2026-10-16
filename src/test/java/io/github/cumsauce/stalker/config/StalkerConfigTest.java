@@ -51,6 +51,18 @@ class StalkerConfigTest {
 		assertEquals(40, d.brainResetTicks());
 		assertEquals(40, d.pretendChaseMinDelayTicks());
 		assertEquals(80, d.pretendChaseMaxDelayTicks());
+		assertTrue(d.foleyVoices());
+	}
+
+	@Test
+	void foleyVoicesDefaultsOnAndRoundTrips() {
+		assertTrue(StalkerConfig.DEFAULT.foleyVoices(), "the Foley voice layer is on by default");
+		assertTrue(StalkerConfig.fromJson(JsonParser.parseString("{}").getAsJsonObject()).foleyVoices(),
+				"an absent key falls back to the default");
+		StalkerConfig off = StalkerConfig.fromJson(
+				JsonParser.parseString("{\"foleyVoices\": false}").getAsJsonObject());
+		assertFalse(off.foleyVoices(), "an explicit false is read as false");
+		assertFalse(off.toJson().get("foleyVoices").getAsBoolean(), "and written back out");
 	}
 
 	@Test
@@ -84,7 +96,7 @@ class StalkerConfigTest {
 				200, 400, 0.5,
 				50, 0.9, 4, 16,
 				15, 1.0,
-				20, 60);
+				20, 60, false);
 		custom.save(file);
 		assertEquals(custom, StalkerConfig.load(file));
 		Files.writeString(file, "not json {");

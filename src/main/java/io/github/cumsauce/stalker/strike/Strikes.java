@@ -9,6 +9,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import io.github.cumsauce.stalker.config.StalkerConfig;
 import io.github.cumsauce.stalker.net.Net;
 import io.github.cumsauce.stalker.sound.Cues;
+import io.github.cumsauce.stalker.sound.VoiceCues;
 import io.github.cumsauce.stalker.world.Phases;
 import io.github.cumsauce.stalker.world.StalkerBrain;
 import io.github.cumsauce.stalker.world.StalkerManager;
@@ -86,6 +87,15 @@ public final class Strikes {
 		villager.getLookControl().setLookAt(player);
 		Cues.strikeTell(villager);
 		Net.strikeTell(player, villager, TELL_SNAP_TICKS);
+
+		// Foley layer: a villager shriek on top of the sting. A scream is an event tell — it comes
+		// from the villager's true position, not the lie layer. Gated server-side on the config so
+		// the client is never sent a cue it has to discard; the client additionally gates on Foley
+		// being installed, so a vanilla client sees nothing change.
+		if (VoiceCues.shouldScream(StalkerConfig.get().foleyVoices())) {
+			Net.voiceCue(player, villager.getX(), villager.getY(), villager.getZ(),
+					VoiceCues.VoiceCue.SCREAM, VoiceCues.screamPitch(VoiceCues.newDraw()), VoiceCues.SCREAM_VOLUME);
+		}
 
 		if (StalkerConfig.get().teleportChance() > ThreadLocalRandom.current().nextDouble()) {
 			snatch(villager, player);
@@ -201,6 +211,13 @@ public final class Strikes {
 		float damage = (float) (cfg.hitDamage() + cfg.hitDamage() * amp);
 		player.hurtServer(level, level.damageSources().mobAttack(villager), damage);
 		player.addEffect(new MobEffectInstance(MobEffects.POISON, cfg.poisonDurationTicks(), amp));
+
+		// Melee shriek — the same true-tell scream as the strike, pitched from a fresh draw so
+		// successive hits in one chase never sound identical.
+		if (VoiceCues.shouldScream(cfg.foleyVoices())) {
+			Net.voiceCue(player, villager.getX(), villager.getY(), villager.getZ(),
+					VoiceCues.VoiceCue.SCREAM, VoiceCues.screamPitch(VoiceCues.newDraw()), VoiceCues.SCREAM_VOLUME);
+		}
 	}
 
 	/** Starts the stun: NAUSEA, freeze, stun cue. Called by the manager's CHASE->STUN edge. */

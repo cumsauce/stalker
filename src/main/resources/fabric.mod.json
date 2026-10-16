@@ -12,11 +12,17 @@
 		],
 		"client": [
 			"io.github.cumsauce.stalker.StalkerClient"
+		],
+		"foley": [
+			"io.github.cumsauce.stalker.sound.FoleyVoicesEntrypoint"
 		]
 	},
 	"mixins": [
 		"stalker.mixins.json"
 	],
+	"suggests": {
+		"foley": "*"
+	},
 	"depends": {
 		"fabricloader": ">=0.19.5",
 		"minecraft": "~26.3",

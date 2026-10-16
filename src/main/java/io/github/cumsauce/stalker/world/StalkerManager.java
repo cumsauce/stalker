@@ -24,10 +24,12 @@ import java.util.List;
 import java.util.function.Predicate;
 
 import io.github.cumsauce.stalker.config.StalkerConfig;
+import io.github.cumsauce.stalker.net.Net;
 import io.github.cumsauce.stalker.world.ApproachPlanner;
 
 import io.github.cumsauce.stalker.world.BindingRules.Owner;
 import io.github.cumsauce.stalker.sound.Cues;
+import io.github.cumsauce.stalker.sound.VoiceCues;
 import io.github.cumsauce.stalker.strike.Strikes;
 
 /**
@@ -805,6 +807,16 @@ public final class StalkerManager {
 			}
 			int span = Math.max(1, c.mumbleMaxIntervalTicks() - c.mumbleMinIntervalTicks() + 1);
 			state.mumbleCooldown = c.mumbleMinIntervalTicks() + villager.getRandom().nextInt(span);
+
+			// Foley laugh: ambient dread, so it obeys the lie layer. The origin is a stale,
+			// laterally-jittered sample from Cues' position history — you hear laughter from where
+			// the stalker was, not where it is, and never from anything at all if it is gone. The
+			// client schedules the remaining beats of the cadence; the server sends one packet.
+			if (VoiceCues.shouldLaugh(c.foleyVoices(), VoiceCues.newDraw())) {
+				Vec3 laughAt = Cues.originFor(villager);
+				Net.voiceCue(player, laughAt.x, laughAt.y, laughAt.z,
+						VoiceCues.VoiceCue.LAUGH, VoiceCues.laughPitch(VoiceCues.newDraw(), 0), VoiceCues.LAUGH_VOLUME);
+			}
 		}
 		if (state.footstepCooldown > 0) {
 			state.footstepCooldown--;

@@ -1,13 +1,21 @@
 package io.github.cumsauce.stalker;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
 import io.github.cumsauce.stalker.net.StrikeTellPayload;
+import io.github.cumsauce.stalker.net.VoiceCuePayload;
+import io.github.cumsauce.stalker.sound.StalkerFoley;
+import io.github.cumsauce.stalker.sound.VoiceCues;
 
 /**
  * Client entrypoint: receives the strike-tell payload and snaps the camera toward
@@ -18,6 +26,23 @@ public class StalkerClient implements ClientModInitializer {
 
 	/** Active camera snap, or null. */
 	private static Snap snap;
+
+	/**
+	 * Queued follow-up beats of a laugh cadence, in arrival order. The server sends one packet per
+	 * laugh (beat 0); the client spaces the rest so a chuckle reads as a rhythm rather than a
+	 * stack. Empty on a vanilla client, which never receives the packet at all.
+	 */
+	private static final List<PendingBeat> PENDING_BEATS = new ArrayList<>();
+
+	/**
+	 * One not-yet-played laugh beat: its position, the pitch this rung should sound at, and how
+	 * many ticks remain before it fires. Immutable — the queue is rebuilt each tick.
+	 */
+	private record PendingBeat(VoiceCues.VoiceCue cue, float pitch, float volume, double x, double y, double z, int ticksLeft) {
+		PendingBeat tick() {
+			return new PendingBeat(cue, pitch, volume, x, y, z, ticksLeft - 1);
+		}
+	}
 
 	/** One camera snap: target position, remaining ticks, duration and the rotation it started from. */
 	private static final class Snap {
@@ -40,11 +65,72 @@ public class StalkerClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		ClientPlayNetworking.registerGlobalReceiver(StrikeTellPayload.TYPE, (payload, context) ->
 				context.client().execute(() -> beginSnap(payload, context.player())));
+		ClientPlayNetworking.registerGlobalReceiver(VoiceCuePayload.TYPE, (payload, context) ->
+				context.client().execute(() -> handleVoiceCue(payload)));
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			if (snap != null) {
 				tickSnap(client.player);
 			}
+			tickVoiceBeats();
 		});
+	}
+
+	/**
+	 * Plays one voice cue, and for a laugh schedules the rest of its cadence. The mod-present gate
+	 * runs before anything else so Foley's classes are never resolved on a client that lacks it;
+	 * {@link StalkerFoley#play} then re-checks Foley's own availability. Degenerate packets (NaN
+	 * coordinates, an unknown cue name) are dropped rather than trusted — the payload is remote
+	 * input.
+	 */
+	private static void handleVoiceCue(VoiceCuePayload payload) {
+		if (!FabricLoader.getInstance().isModLoaded("foley")) {
+			return;
+		}
+		if (!Double.isFinite(payload.x()) || !Double.isFinite(payload.y()) || !Double.isFinite(payload.z())
+				|| !Float.isFinite(payload.pitch()) || !Float.isFinite(payload.volume())) {
+			return;
+		}
+		VoiceCues.VoiceCue cue;
+		try {
+			cue = VoiceCues.VoiceCue.valueOf(payload.cue());
+		} catch (IllegalArgumentException unknown) {
+			return;
+		}
+		StalkerFoley.play(cue, payload.x(), payload.y(), payload.z(), payload.pitch(), payload.volume());
+		if (cue != VoiceCues.VoiceCue.LAUGH) {
+			return;
+		}
+		// Beat 0 just played; queue the remaining rungs, each one pitch-step lower and one gap later.
+		for (int beat = 1; beat < VoiceCues.LAUGH_CADENCE; beat++) {
+			PENDING_BEATS.add(new PendingBeat(cue, VoiceCues.laughBeatPitch(payload.pitch(), beat),
+					payload.volume(), payload.x(), payload.y(), payload.z(),
+					beat * VoiceCues.LAUGH_BEAT_GAP_TICKS));
+		}
+	}
+
+	/** Fires queued laugh beats whose countdown has run out, in arrival order. */
+	private static void tickVoiceBeats() {
+		if (PENDING_BEATS.isEmpty()) {
+			return;
+		}
+		List<PendingBeat> due = null;
+		for (int i = 0; i < PENDING_BEATS.size(); i++) {
+			PendingBeat beat = PENDING_BEATS.get(i).tick();
+			if (beat.ticksLeft() <= 0) {
+				if (due == null) {
+					due = new ArrayList<>(2);
+				}
+				due.add(beat);
+			} else {
+				PENDING_BEATS.set(i, beat);
+			}
+		}
+		if (due != null) {
+			PENDING_BEATS.removeAll(due);
+			for (PendingBeat beat : due) {
+				StalkerFoley.play(beat.cue(), beat.x(), beat.y(), beat.z(), beat.pitch(), beat.volume());
+			}
+		}
 	}
 
 	/** Validates the payload and starts a snap; anything missing or degenerate degrades silently. */
