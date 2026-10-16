@@ -99,6 +99,18 @@ class VoiceCuesTest {
 				"a beat past the cadence clamps to the last rung, not past the floor");
 	}
 
+	@Test
+	@DisplayName("NaN is not silently clamped: the caller must reject non-finite pitch first")
+	void clampLaughPropagatesNaN() {
+		// Java's Math.max/min propagate NaN, so clampLaugh(NaN) is NaN, not a window bound. This
+		// pins the contract that makes the guards at the wire boundary load-bearing: handleVoiceCue
+		// rejects !Float.isFinite(payload.pitch()) BEFORE any clamp runs, so NaN never reaches Foley.
+		assertTrue(Float.isNaN(VoiceCues.clampLaugh(Float.NaN)),
+				"clampLaugh must not invent a bound for NaN — silent clamping would hide a bad payload");
+		assertTrue(Float.isNaN(VoiceCues.laughBeatPitch(Float.NaN, 1)),
+				"a NaN first beat stays NaN through the cadence derivation too");
+	}
+
 	// ------------------------------------------------------------------ cadence
 
 	@Test

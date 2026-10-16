@@ -15,6 +15,7 @@ import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -196,12 +197,25 @@ public final class StalkerManager {
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> CoverTrace.reset());
 		// Drop per-player bookkeeping when a player leaves: the tick loop only sees online players,
 		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever;
-		// the same goes for the debug-particle toggle.
+		// the same goes for the debug-particle toggle. The manager State is dropped too — it is
+		// rebuilt from the persisted binding attachment on rejoin (see fromAttachment), so keeping it
+		// would only leak one entry per departed bound player for the JVM's lifetime and slow the
+		// per-tick lookups that walk STATES.
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			ServerPlayer player = handler.getPlayer();
 			if (player != null) {
 				Strikes.clear(player);
+				STATES.remove(player.getUUID());
 				DEBUG_PLAYERS.remove(player.getUUID());
+			}
+		});
+		// Instant villager removals (lightning conversion, /kill, chunk-level despawn) never let the
+		// per-tick !isAlive() check in tickStalker run, so the binding would otherwise linger until
+		// the 1200-tick orphan clock fires dropPlayerSide — an unbind with NO blacklist, violating
+		// plan-S1 (convert => unbind + blacklist). ENTITY_UNLOAD catches those removals directly.
+		ServerEntityEvents.ENTITY_UNLOAD.register((entity, level) -> {
+			if (entity instanceof Villager villager) {
+				onVillagerRemoved(level, villager);
 			}
 		});
 	}
@@ -217,7 +231,10 @@ public final class StalkerManager {
 	private static void tickLevel(ServerLevel level) {
 		StalkerConfig c = StalkerConfig.get();
 		// The cover constellation is server-global state (a shared list of "the stalker was here"
-		// marks), so it is ticked once per world tick, not per player and not per dimension.
+		// marks) but this hook fires once per loaded dimension each server tick, so tick(level) runs
+		// N times per tick where N is the loaded-dimension count. Expiry is idempotent (harmless to
+		// repeat); the age%40 refresh emission is per-call, so a trace committed in the overworld is
+		// re-emitted in each dimension at those coordinates. Single-dimension play is unaffected.
 		CoverTrace.tick(level);
 		if (level.getGameTime() % 1200L == 0L) {
 			rollRandomBinds(level, c);
@@ -602,7 +619,11 @@ public final class StalkerManager {
 		if (state.coverPos == null
 			|| Vec3.atLowerCornerOf(state.coverPos).add(0.5, 0.0, 0.5).distanceTo(player.position()) < COVER_DISTURB_DISTANCE) {
 			if (!findCoverNow(level, player, villager, state, c)) {
-				actNormal(level, player, villager, state);
+				// No cover to be had — fall back to STALK rather than sitting in COVER with no
+				// coverPos, which would skip the unspotted-exit below and wedge the phase here.
+				state.phase = Phases.Phase.STALK;
+				state.coverPos = null;
+				state.resetMovement();
 				return;
 			}
 			state.dashTicks = 0;
@@ -1288,19 +1309,26 @@ public final class StalkerManager {
 		}
 	}
 
-	/** Called by the removal hook when a bound villager dies or is removed (plan §1). */
+	/** Called by the {@code ENTITY_UNLOAD} hook when a bound villager is removed (plan §1). */
 	public static void onVillagerRemoved(ServerLevel level, Villager villager) {
+		UUID villagerId = villager.getUUID();
+		// Collect the matching player first: removing from STATES while iterating its entry set would
+		// throw ConcurrentModificationException.
+		UUID boundPlayer = null;
 		for (Map.Entry<UUID, State> entry : STATES.entrySet()) {
-			if (!entry.getValue().villagerId.equals(villager.getUUID())) {
-				continue;
+			if (entry.getValue().villagerId.equals(villagerId)) {
+				boundPlayer = entry.getKey();
+				break;
 			}
-			ServerPlayer player = level.getServer().getPlayerList().getPlayer(entry.getKey());
-			STATES.remove(entry.getKey());
-			if (player != null) {
-				Attachments.unbindPlayer(player);
-				Attachments.blacklist(level, player, villager.getUUID(), StalkerConfig.get().blacklistTicks());
-			}
+		}
+		if (boundPlayer == null) {
 			return;
+		}
+		STATES.remove(boundPlayer);
+		ServerPlayer player = level.getServer().getPlayerList().getPlayer(boundPlayer);
+		if (player != null) {
+			Attachments.unbindPlayer(player);
+			Attachments.blacklist(level, player, villagerId, StalkerConfig.get().blacklistTicks());
 		}
 	}
 

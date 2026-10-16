@@ -5,6 +5,7 @@ import java.util.List;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.player.LocalPlayer;
@@ -82,6 +83,12 @@ public class StalkerClient implements ClientModInitializer {
 			}
 			tickVoiceBeats();
 		});
+		// A laugh beat still in flight when the player disconnects would otherwise fire on the
+		// title screen, where client.level is null and Foley's play has no level to anchor to.
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+			PENDING_BEATS.clear();
+			snap = null;
+		});
 	}
 
 	/**
@@ -109,6 +116,11 @@ public class StalkerClient implements ClientModInitializer {
 		// reach Foley's mixer unmuted and untuned, so clamp to windows the layer actually produces.
 		float pitch = Mth.clamp(payload.pitch(), MIN_REMOTE_PITCH, MAX_REMOTE_PITCH);
 		float volume = Mth.clamp(payload.volume(), MIN_REMOTE_VOLUME, MAX_REMOTE_VOLUME);
+		if (cue == VoiceCues.VoiceCue.LAUGH) {
+			// Beat 0 must sit in the same laugh window the derived beats clamp to — otherwise a low
+			// beat-0 pitch plays low and the derived beats clamp up, ascending the cadence.
+			pitch = VoiceCues.clampLaugh(pitch);
+		}
 		StalkerFoley.play(cue, payload.x(), payload.y(), payload.z(), pitch, volume);
 		if (cue != VoiceCues.VoiceCue.LAUGH) {
 			return;

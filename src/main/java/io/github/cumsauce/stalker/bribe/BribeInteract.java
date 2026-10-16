@@ -56,12 +56,15 @@ public final class BribeInteract {
 		ItemStack offered = clicked.getItemInHand(hand);
 		if (offered.isEmpty()) return InteractionResult.PASS;
 
-		// Exactly one item per click, on both the accept and pretend paths.
+		// Exactly one item per click, on both the accept and pretend paths. The accept test runs
+		// BEFORE the shrink: the held stack is a live reference, so shrinking first would evaluate
+		// a single-count bribe against an empty stack and it could never succeed.
+		boolean accepted = BribeTables.accepts(villager, offered);
 		offered.shrink(1);
 
 		// Identical sounds either way — that is the deception (PLAN.md section 5/6).
 		Cues.bribeAccepted(villager);
-		if (BribeTables.accepts(villager, offered)) {
+		if (accepted) {
 			// Accept: unbind AND blacklist (plan §6 — it got what it wanted, 10-minute immunity).
 			StalkerManager.blacklistAfterSuccess(clicked);
 			villager.getNavigation().moveTo(

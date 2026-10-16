@@ -28,8 +28,8 @@ import net.minecraft.world.phys.Vec3;
  * can neither triangulate the live position nor rule out that the sound was real. Event tells
  * (strike tell, ambush windup, dash, peek, the bind hint, stun, bribes, the death chime) stay
  * true: the player must be able to react to those, and their accuracy is the gameplay contract
- * rather than a leak. The lies need position memory, so {@link #noteStalkerPosition} has to be
- * called once per tick per stalker.
+ * rather than a leak. The lies need position memory, so {@link #noteStalkerPosition(UUID, Vec3)}
+ * has to be called once per tick per stalker.
  */
 public final class Cues {
 
@@ -73,18 +73,9 @@ public final class Cues {
 	/**
 	 * Bound on tracked per-stalker histories. Pushes are access-ordered, so the entry of a stalker
 	 * that stopped being fed (unbound, removed) ages out first instead of leaking on a long-lived
-	 * server; an evicted stalker falls back to the shared history, which degrades to slightly
-	 * mixed samples rather than to no lies at all.
+	 * server.
 	 */
 	private static final int MAX_TRACKED_STALKERS = 8;
-
-	/**
-	 * Position memory for the unkeyed {@link #noteStalkerPosition(Vec3)}: the single-stalker path.
-	 * Servers where several players are stalked at once must key their pushes per villager
-	 * ({@link #noteStalkerPosition(UUID, Vec3)}) so the stalkers cannot cross-contaminate each
-	 * other's memories.
-	 */
-	private static final PositionHistory SHARED_HISTORY = new PositionHistory(HISTORY_TICKS);
 
 	/** Per-stalker position memory, keyed by villager UUID. */
 	private static final Map<UUID, PositionHistory> HISTORIES =
@@ -112,18 +103,9 @@ public final class Cues {
 	/**
 	 * Feeds one tick of stalker movement into the lie layer. Call once per tick from the tick loop
 	 * (e.g. {@code tickStalker}) before any cue can fire; the history is what ambient cues lie
-	 * from, so without it they fall back to the live position. This overload feeds the shared,
-	 * single-stalker history — on a server where several players are stalked at once, use
-	 * {@link #noteStalkerPosition(UUID, Vec3)} instead.
-	 */
-	public static void noteStalkerPosition(Vec3 pos) {
-		SHARED_HISTORY.add(pos);
-	}
-
-	/**
-	 * Keyed variant of {@link #noteStalkerPosition(Vec3)}: the integrator hook for multiplayer,
-	 * where each stalker keeps its own memory ({@code Cues.noteStalkerPosition(villager.getUUID(),
-	 * villager.position())} once per tick per stalker).
+	 * from, so without it they fall back to the live position. Each stalker keeps its own memory
+	 * ({@code Cues.noteStalkerPosition(villager.getUUID(), villager.position())}), so a server where
+	 * several players are stalked at once does not cross-contaminate them.
 	 */
 	public static void noteStalkerPosition(UUID stalkerId, Vec3 pos) {
 		HISTORIES.computeIfAbsent(stalkerId, id -> new PositionHistory(HISTORY_TICKS)).add(pos);
@@ -142,10 +124,12 @@ public final class Cues {
 	 * The pure core of {@link #originFor(Villager)}: a stale sample from {@code history} — its age
 	 * drawn uniformly from [{@code MIN_STALE_TICKS}, {@code MAX_STALE_TICKS}] so consecutive cues
 	 * are not all equally stale — plus a small lateral jitter so the direction is slightly wrong
-	 * too. Returns {@code livePos} unchanged only when the history is empty (the first tick).
+	 * too. Returns {@code livePos} unchanged when the history is empty (the first tick) or holds
+	 * fewer than {@code MIN_STALE_TICKS} samples: a "stale" pick clamped to a near-live sample
+	 * would betray the live position, which the lie layer exists to prevent.
 	 */
 	public static Vec3 originFor(PositionHistory history, Vec3 livePos, RandomSource random) {
-		if (history.isEmpty()) {
+		if (history.size() < MIN_STALE_TICKS) {
 			return livePos;
 		}
 		int staleTicks = MIN_STALE_TICKS + random.nextInt(MAX_STALE_TICKS - MIN_STALE_TICKS + 1);
@@ -185,9 +169,14 @@ public final class Cues {
 		return at.add(Math.cos(angle) * radius, 0.0, Math.sin(angle) * radius);
 	}
 
-	/** The memory a cue for this stalker lies from: its own when keyed pushes exist, else the shared one. */
+	/**
+	 * The memory a cue for this stalker lies from. Absent until the first {@link #noteStalkerPosition}
+	 * for that stalker, so the freshly created history is empty and {@link #originFor} falls back to
+	 * the live position for the one tick before the push lands — the same first-tick behavior as a
+	 * brand-new binding.
+	 */
 	private static PositionHistory historyFor(UUID stalkerId) {
-		return HISTORIES.getOrDefault(stalkerId, SHARED_HISTORY);
+		return HISTORIES.computeIfAbsent(stalkerId, id -> new PositionHistory(HISTORY_TICKS));
 	}
 
 	/**

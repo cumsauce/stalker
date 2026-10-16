@@ -145,7 +145,10 @@ public final class VoiceCues {
 		return Math.min(Math.max(beat, 0), LAUGH_CADENCE - 1);
 	}
 
-	private static float clampLaugh(float pitch) {
+	/** Clamps a pitch into the laugh window [{@link #LAUGH_PITCH_MIN}, {@link #LAUGH_PITCH_MAX}].
+	 * Public so the client can hold beat 0 to the same window the derived beats use — otherwise a
+	 * low beat-0 pitch would play low and the derived beats would clamp up, ascending the cadence. */
+	public static float clampLaugh(float pitch) {
 		return Math.min(LAUGH_PITCH_MAX, Math.max(LAUGH_PITCH_MIN, pitch));
 	}
 }
