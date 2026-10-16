@@ -28,4 +28,23 @@ public class StalkerGameTest {
 			helper.succeed();
 		});
 	}
+
+	@GameTest(maxTicks = 60)
+	public void spawnRingSpawnsEmployedVillagers(net.minecraft.gametest.framework.GameTestHelper helper) {
+		var spawned = io.github.cumsauce.stalker.world.VillagerSpawner.spawnRing(
+				helper.getLevel(), helper.absoluteVec(new net.minecraft.world.phys.Vec3(2.5, 1.0, 2.5)), 5, helper.getLevel().getRandom());
+		helper.runAfterDelay(10, () -> {
+			if (spawned.isEmpty()) {
+				helper.fail("VillagerSpawner.spawnRing spawned nobody");
+				return;
+			}
+			for (String job : spawned) {
+				if (job.equals("none") || job.equals("nitwit")) {
+					helper.fail("spawned an excluded profession: " + job);
+					return;
+				}
+			}
+			helper.succeed();
+		});
+	}
 }

@@ -43,6 +43,7 @@ It goes on the **server** (or in the `mods/` folder of a single-player world). Y
 | `bribe [player]` | Show that villager's profession table and threshold |
 | `reload` | Re-read `config/stalker.json` |
 | `debug` | Toggle the particle overlay (cover candidates, line-of-sight rays, strike range) |
+| `spawn [count]` | Scatter `count` (default 12) employed villagers on standable ground in a ring around you — for testing without a village |
 
 ## Config
 
