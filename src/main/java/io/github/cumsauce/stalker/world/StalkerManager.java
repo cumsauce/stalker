@@ -209,6 +209,9 @@ public final class StalkerManager {
 
 	private static void tickLevel(ServerLevel level) {
 		StalkerConfig c = StalkerConfig.get();
+		// The cover constellation is server-global state (a shared list of "the stalker was here"
+		// marks), so it is ticked once per world tick, not per player and not per dimension.
+		CoverTrace.tick(level);
 		if (level.getGameTime() % 1200L == 0L) {
 			rollRandomBinds(level, c);
 		}
@@ -276,6 +279,10 @@ public final class StalkerManager {
 		// canSee up to three times otherwise and every call is a chunk-clip ray.
 		boolean playerCanSeeVillager = Senses.canSee(level, player, villager);
 		state.playerCanSeeVillager = playerCanSeeVillager;
+		// Feed the cue layer's position history. Cues play from a stale sample of this, not from the
+		// villager's live position — see Cues.originFor. Without this the cues are a free triangulation
+		// of the stalker's exact position, which is the leak the lie layer exists to close.
+		Cues.noteStalkerPosition(villager.getUUID(), villager.position());
 		if (playerCanSeeVillager) {
 			// The stalker's memory of where the player is only advances while it can see them. This is
 			// the input the plan is built against when the player is out of sight (see planTarget).
@@ -517,6 +524,11 @@ public final class StalkerManager {
 		List<Vec3> hops = ApproachPlanner.plan(villagerPos, planTarget, candidates, seen);
 		state.plan.clear();
 		state.plan.addAll(hops);
+		// Approach hops read as tracks too — each hop the stalker commits to is a point it is
+		// heading toward, so it earns a mark the same as a cover hide.
+		for (Vec3 hop : hops) {
+			CoverTrace.mark(level, BlockPos.containing(hop), villager.getRandom());
+		}
 		state.planAnchor = planTarget;
 		state.planAge = 0;
 		state.planRebuildCooldown = PLAN_REBUILD_COOLDOWN_TICKS;
@@ -720,12 +732,18 @@ public final class StalkerManager {
 			probes++;
 			if (villager.getNavigation().createPath(candidate, 0) != null) {
 				state.coverPos = candidate;
+				// The constellation: a faint mark so the player can read the stalker's approach
+				// history when backtracking. Refreshed if the same point is re-picked.
+				CoverTrace.mark(level, candidate, villager.getRandom());
 				return true;
 			}
 		}
 		// Nothing reachable: fall back to the best-scoring candidate anyway (approaching it may
 		// still improve the situation, and acting normal with zero cover is worse).
 		state.coverPos = candidates.isEmpty() ? null : candidates.get(0);
+		if (state.coverPos != null) {
+			CoverTrace.mark(level, state.coverPos, villager.getRandom());
+		}
 		return state.coverPos != null;
 	}
 
