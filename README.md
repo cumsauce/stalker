@@ -57,7 +57,7 @@ It goes on the **server** (or in the `mods/` folder of a single-player world). Y
 | `requireNight`, `requireAlone` | false | Restrict binds to night / to being alone |
 | `orbitInner`, `orbitOuter` | 12, 24 | The band it stalks you from |
 | `spottedRange`, `spottedAngleDeg` | 28, 25 | What counts as you seeing it |
-| `strikeRange`, `strikeBehindDot` | 2.2, 0.2 | How close and behind it must be to strike |
+| `strikeRange` | 2.2 | How close it must be to strike (only while out of your line of sight) |
 | `teleportChance` | 0.15 | Chance the strike is the snatch instead of the chase |
 | `teleportDistance`, `teleportMaxLift` | 100, 3 | How far it throws you, and how high you land |
 | `chaseDurationTicks` | 180 | The 9-second blindness chase |

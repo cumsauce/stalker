@@ -28,7 +28,6 @@ public record StalkerConfig(
 		double spottedRange,
 		double spottedAngleDeg,
 		double strikeRange,
-		double strikeBehindDot,
 		double teleportChance,
 		double teleportDistance,
 		double teleportMaxLift,
@@ -65,7 +64,7 @@ public record StalkerConfig(
 			0.004, 48, false, false,
 			12, 24,
 			28, 25,
-			2.2, 0.2,
+			2.2,
 			0.15, 100, 3,
 			180, 1.15, 1.6, 22, 2, 2, 200,
 			160, 40,
@@ -140,7 +139,6 @@ public record StalkerConfig(
 				num(json, "spottedRange", d.spottedRange),
 				num(json, "spottedAngleDeg", d.spottedAngleDeg),
 				num(json, "strikeRange", d.strikeRange),
-				num(json, "strikeBehindDot", d.strikeBehindDot),
 				num(json, "teleportChance", d.teleportChance),
 				num(json, "teleportDistance", d.teleportDistance),
 				num(json, "teleportMaxLift", d.teleportMaxLift),
@@ -186,7 +184,6 @@ public record StalkerConfig(
 		json.addProperty("spottedRange", spottedRange);
 		json.addProperty("spottedAngleDeg", spottedAngleDeg);
 		json.addProperty("strikeRange", strikeRange);
-		json.addProperty("strikeBehindDot", strikeBehindDot);
 		json.addProperty("teleportChance", teleportChance);
 		json.addProperty("teleportDistance", teleportDistance);
 		json.addProperty("teleportMaxLift", teleportMaxLift);

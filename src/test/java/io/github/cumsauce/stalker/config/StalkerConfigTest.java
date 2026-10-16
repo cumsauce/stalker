@@ -28,7 +28,6 @@ class StalkerConfigTest {
 		assertEquals(28, d.spottedRange());
 		assertEquals(25, d.spottedAngleDeg());
 		assertEquals(2.2, d.strikeRange());
-		assertEquals(0.2, d.strikeBehindDot());
 		assertEquals(0.15, d.teleportChance());
 		assertEquals(100, d.teleportDistance());
 		assertEquals(3, d.teleportMaxLift());
@@ -74,7 +73,7 @@ class StalkerConfigTest {
 				0.5, 16, true, true,
 				6, 30,
 				20, 40,
-				3.0, 0.1,
+				3.0,
 				1.0, 64, 2,
 				100, 1.3, 2.0, 10, 4, 1, 100,
 				60, 24,

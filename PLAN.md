@@ -297,7 +297,7 @@ Each milestone: implement, `./gradlew build` (compiles + unit tests) green, run 
 | `requireNight` / `requireAlone` | false | Extra bind conditions (alone = no other player within 64) |
 | `orbitInner` / `orbitOuter` | 12 / 24 | Hold band in STALK |
 | `spottedRange` / `spottedAngleDeg` | 28 / 25 | Spotted cone |
-| `strikeRange` / `strikeBehindDot` | 2.2 / 0.2 | Strike trigger |
+| `strikeRange` | 2.2 | Strike trigger (2026-10-16: superseded §4's facing rule — it now strikes only when out of LOS, not when behind) |
 | `teleportChance` | 0.15 | Variant A share of strikes |
 | `teleportDistance` / `teleportMaxLift` | 100 (±16) / 3 | Snatch landing |
 | `chaseDurationTicks` | 180 | Blindness = the chase timer |

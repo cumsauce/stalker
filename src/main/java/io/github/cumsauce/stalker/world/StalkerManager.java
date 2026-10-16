@@ -252,9 +252,11 @@ public final class StalkerManager {
 			return;
 		}
 
-		// Strike trigger (plan §4): close, roughly behind, STALK/COVER only.
+		// Strike trigger (supersedes plan §4's facing rule per play feedback): it attacks only when
+		// it cannot be seen — out of the player's line of sight — and close. Being viewed, even
+		// from behind, never triggers it.
 		if (distance < c.strikeRange() && state.strikeCooldown <= 0
-			&& Senses.behindEnough(player, villager, c.strikeBehindDot())) {
+			&& !Senses.canSee(level, player, villager)) {
 			Strikes.strike(villager, player);
 			state.resetMovement();
 			return;
@@ -366,15 +368,9 @@ public final class StalkerManager {
 	}
 
 	private static void tickCover(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
-		// In COVER within 4 blocks it lunges regardless of facing (plan §4).
-		if (distance < 4.0 && state.strikeCooldown <= 0) {
-			villager.setPose(Pose.STANDING);
-			Strikes.strike(villager, player);
-			state.resetMovement();
-			return;
-		}
+		// Same hidden-only rule as STALK: strike from cover when unseen, out of LOS, and close.
 		if (distance < c.strikeRange() && state.strikeCooldown <= 0
-			&& Senses.behindEnough(player, villager, c.strikeBehindDot())) {
+			&& !Senses.canSee(level, player, villager)) {
 			villager.setPose(Pose.STANDING);
 			Strikes.strike(villager, player);
 			state.resetMovement();

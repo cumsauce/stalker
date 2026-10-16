@@ -69,15 +69,6 @@ public final class Senses {
 	}
 
 	/**
-	 * Strike-facing test (plan §4): the villager is roughly behind or beside
-	 * the player — dot of player look × direction-to-villager below
-	 * {@code maxDot} (config {@code strikeBehindDot}, default 0.2).
-	 */
-	public static boolean behindEnough(Player player, Entity villager, double maxDot) {
-		return lookDot(player.getLookAngle(), player.getEyePosition(), villager.getEyePosition()) < maxDot;
-	}
-
-	/**
 	 * True when the player's gaze passes near the block position (used to gate
 	 * peeking: peek only while the player is not looking at the cover point).
 	 */
