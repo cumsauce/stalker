@@ -1,5 +1,7 @@
 package io.github.cumsauce.stalker.world;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import net.minecraft.core.BlockPos;
@@ -47,6 +49,17 @@ public final class CoverSearch {
 	 *         (the caller then acts normal, plan §3).
 	 */
 	public static Optional<BlockPos> findCover(ServerLevel level, Vec3 villagerPos, Vec3 playerEye) {
+		return findCoverRanked(level, villagerPos, playerEye, Vec3.ZERO).stream().findFirst();
+	}
+
+	/**
+	 * Ranked cover candidates, best first. Besides the lateral occlusion sampling, candidates whose
+	 * escape segment crosses the player's view cone are penalised, so the villager slips behind the
+	 * nearest thing rather than sprinting across the middle of the screen.
+	 *
+	 * @param playerLook the player's current look direction (cone centre); zero to disable the penalty
+	 */
+	public static List<BlockPos> findCoverRanked(ServerLevel level, Vec3 villagerPos, Vec3 playerEye, Vec3 playerLook) {
 		Vec3 away = villagerPos.subtract(playerEye).multiply(1.0, 0.0, 1.0);
 		Vec3 side = away.lengthSqr() < 1.0E-4 ? new Vec3(0.0, 0.0, 1.0) : new Vec3(-away.z, 0.0, away.x).normalize();
 		Vec3[] eyes = new Vec3[LATERAL_SAMPLES.length];
@@ -54,7 +67,33 @@ public final class CoverSearch {
 			eyes[i] = playerEye.add(side.scale(LATERAL_SAMPLES[i]));
 		}
 		Vec3 fleeDir = away.lengthSqr() < 1.0E-4 ? Vec3.ZERO : away.normalize();
-		return search(level, villagerPos, eyes, RADII, Y_SPREAD, PLAYER_DISTANCE_WEIGHT, true, fleeDir);
+		List<BlockPos> ranked = new ArrayList<>();
+		searchInto(ranked, level, villagerPos, eyes, RADII, Y_SPREAD, PLAYER_DISTANCE_WEIGHT, true, fleeDir);
+		if (playerLook.lengthSqr() > 1.0E-4) {
+			// Penalty per sample of the escape segment that sits inside the player's view cone.
+			Vec3 look = playerLook.normalize();
+			ranked.sort((a, b) -> Double.compare(coneExposure(a, villagerPos, playerEye, look),
+				coneExposure(b, villagerPos, playerEye, look)));
+		}
+		return ranked;
+	}
+
+	/** Samples the escape segment for exposure to the player's view cone; lower is better. */
+	private static double coneExposure(BlockPos cover, Vec3 villagerPos, Vec3 playerEye, Vec3 look) {
+		double exposure = 0.0;
+		Vec3 to = Vec3.atLowerCornerOf(cover).add(0.5, 1.0, 0.5);
+		for (double f : new double[] {0.25, 0.5, 0.75}) {
+			Vec3 sample = villagerPos.lerp(to, f).add(0.0, 1.0, 0.0);
+			Vec3 rel = sample.subtract(playerEye);
+			double len = rel.length();
+			if (len < 1.0E-4) {
+				continue;
+			}
+			if (rel.scale(1.0 / len).dot(look) > 0.7) {
+				exposure += 1.0;
+			}
+		}
+		return exposure;
 	}
 
 	/**
@@ -88,8 +127,21 @@ public final class CoverSearch {
 	 */
 	public static Optional<BlockPos> search(ServerLevel level, Vec3 centre, Vec3[] viewerEyes, int[] radii,
 			int[] ySpread, double fleeWeight, boolean fleeWeighted, Vec3 fleeDirection) {
-		Optional<BlockPos> best = Optional.empty();
-		double bestScore = Double.MAX_VALUE;
+		List<BlockPos> ranked = new ArrayList<>();
+		searchInto(ranked, level, centre, viewerEyes, radii, ySpread, fleeWeight, fleeWeighted, fleeDirection);
+		return ranked.stream().findFirst();
+	}
+
+	/**
+	 * The search core, collecting every qualifying candidate into {@code out}, best-scoring first.
+	 * Score = distance from centre + optional weighted player distance, plus the beyond-the-villager
+	 * preference when weighted: cover between the villager and the player means doubling back through
+	 * the player's view, so it is deprioritised.
+	 */
+	public static void searchInto(List<BlockPos> out, ServerLevel level, Vec3 centre, Vec3[] viewerEyes,
+			int[] radii, int[] ySpread, double fleeWeight, boolean fleeWeighted, Vec3 fleeDirection) {
+		record Scored(BlockPos pos, double score) {}
+		List<Scored> scored = new ArrayList<>();
 		for (int i = 0; i < DIRECTIONS; i++) {
 			double angle = (Math.PI * 2.0 * i) / DIRECTIONS;
 			double dx = Math.cos(angle);
@@ -107,24 +159,20 @@ public final class CoverSearch {
 					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
 					double score = center.distanceTo(centre)
 						+ (fleeWeighted ? fleeWeight * center.distanceTo(viewerEyes[0]) : 0.0);
-					// Prefer candidates roughly beyond the villager from the player: cover between
-					// the two means the villager must double back through the player's view.
 					if (fleeWeighted && fleeDirection.lengthSqr() > 1.0E-4) {
 						Vec3 toCover = center.subtract(centre).multiply(1.0, 0.0, 1.0);
 						if (toCover.lengthSqr() > 1.0E-4) {
 							score += 2.0 * (1.0 - fleeDirection.normalize().dot(toCover.normalize()));
 						}
 					}
-					if (score < bestScore) {
-						bestScore = score;
-						best = Optional.of(pos);
-					}
+					scored.add(new Scored(pos, score));
 				}
-				// One horizontal candidate: the Y loop already picked its best spot;
-				// continue to the next radius.
 			}
 		}
-		return best;
+		scored.sort((a, b) -> Double.compare(a.score(), b.score()));
+		for (Scored entry : scored) {
+			out.add(entry.pos());
+		}
 	}
 
 	/**

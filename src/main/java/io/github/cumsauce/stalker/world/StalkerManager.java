@@ -18,7 +18,14 @@ import net.minecraft.world.phys.Vec3;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Predicate;
+
 import io.github.cumsauce.stalker.config.StalkerConfig;
+import io.github.cumsauce.stalker.world.ApproachPlanner;
+
 import io.github.cumsauce.stalker.world.BindingRules.Owner;
 import io.github.cumsauce.stalker.sound.Cues;
 import io.github.cumsauce.stalker.strike.Strikes;
@@ -87,6 +94,12 @@ public final class StalkerManager {
 
 	/** Fractions of the villager-to-player line used as staged approach points. */
 	private static final double[] APPROACH_FRACTIONS = {0.66, 0.45, 0.28};
+
+	/** Rebuild the approach plan when the player has moved this far from where it was planned. */
+	private static final double PLAN_STALE_DISTANCE = 8.0;
+
+	/** Rebuild the approach plan after this many ticks even if the player stayed put. */
+	private static final int PLAN_MAX_AGE_TICKS = 200;
 
 	/** Slower escape (was 1.25 — a full sprint): reads as scrambling, not teleporting. */
 	private static final float COVER_SPRINT_SPEED = 0.95F;
@@ -265,9 +278,10 @@ public final class StalkerManager {
 			// > 64: close directly, stealth optional (catch-up).
 			target = player.position();
 		} else if (advancing) {
-			// Committed advance: stage through cover on the line to the player rather than
-			// beelining across open ground — the villager closes by hops between cover points.
-			target = findApproachStep(level, player, villager);
+			// Committed advance: walk the committed hop plan (built through cover, legs out of
+			// sight) and rebuild it only when it is spent, stale, or the player has moved away
+			// from where it was planned. This is what makes the approach look thought out.
+			target = nextPlanHop(level, player, villager, state);
 			if (target == null) {
 				target = player.position();
 			}
@@ -293,24 +307,42 @@ public final class StalkerManager {
 	}
 
 	/**
-	 * The next staged approach point on the line to the player: the farthest sample along the way
-	 * that has a standable, LOS-blocked spot near it. Returns null when no cover staging exists,
-	 * in which case the caller closes directly (it is unseen — a straight approach is fine).
+	 * The next hop of the committed approach plan, or null when there is none. The plan is a queue
+	 * of cover hops built by {@link ApproachPlanner} — each hop makes progress toward the player
+	 * and every leg between hops stays out of the player's sight (or is short enough to dash).
+	 * It is rebuilt when spent, when the player strays from the anchor it was planned against,
+	 * or after a while even if they did not (terrain may have changed).
 	 */
-	private static Vec3 findApproachStep(ServerLevel level, ServerPlayer player, Villager villager) {
-		Vec3 from = villager.position();
-		Vec3 to = player.position();
+	private static Vec3 nextPlanHop(ServerLevel level, ServerPlayer player, Villager villager, State state) {
+		Vec3 playerPos = player.position();
+		// Advance the queue past hops already reached.
+		while (!state.plan.isEmpty() && villager.position().distanceTo(state.plan.peek()) < 2.0) {
+			state.plan.poll();
+		}
+		boolean stale = state.plan.isEmpty()
+			|| state.planAnchor == null
+			|| state.planAnchor.distanceTo(playerPos) > PLAN_STALE_DISTANCE
+			|| state.planAge++ > PLAN_MAX_AGE_TICKS;
+		if (!stale) {
+			Vec3 hop = state.plan.peek();
+			return hop == null ? null : hop;
+		}
+		List<Vec3> candidates = new ArrayList<>();
 		for (double fraction : APPROACH_FRACTIONS) {
-			Vec3 sample = from.lerp(to, fraction);
-			Optional<BlockPos> found = CoverSearch.findApproachPoint(level, sample, player.getEyePosition());
-			if (found.isPresent()) {
-				Vec3 point = Vec3.atLowerCornerOf(found.get()).add(0.5, 0.0, 0.5);
-				if (point.distanceTo(from) > 2.0 && point.distanceTo(to) < from.distanceTo(to)) {
-					return point;
-				}
+			Vec3 sample = villager.position().lerp(playerPos, fraction);
+			for (BlockPos pos : CoverSearch.findApproachPoint(level, sample, player.getEyePosition())
+					.stream().limit(2).toList()) {
+				candidates.add(Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5));
 			}
 		}
-		return null;
+		Predicate<Vec3> seen = point -> Senses.canSee(level, player.getEyePosition(), point.add(0.0, 1.0, 0.0));
+		List<Vec3> hops = ApproachPlanner.plan(villager.position(), playerPos, candidates, seen);
+		state.plan.clear();
+		state.plan.addAll(hops);
+		state.planAnchor = playerPos;
+		state.planAge = 0;
+		Vec3 hop = state.plan.peek();
+		return hop == null ? null : hop;
 	}
 
 	/** Unseen-approach gate (plan §2): player looking away (dot ≤ 0.35) or LOS blocked. */
@@ -468,14 +500,33 @@ public final class StalkerManager {
 		}
 	}
 
-	/** Runs one (throttled) cover search; returns true when a cover point is set. */
+	/**
+	 * Runs one (throttled) cover search; returns true when a cover point is set. The top ranked
+	 * candidates are each probed with a real pathfind (bounded to three probes per search), so the
+	 * committed point is one the villager can actually reach — unreachable points used to be
+	 * discovered only by dashing into them until the timeout.
+	 */
 	private static boolean findCoverNow(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c) {
 		if (state.coverSearchCooldown > 0) {
 			return state.coverPos != null;
 		}
 		state.coverSearchCooldown = COVER_SEARCH_COOLDOWN;
-		var found = CoverSearch.findCover(level, villager.position(), player.getEyePosition());
-		state.coverPos = found.orElse(null);
+		var candidates = CoverSearch.findCoverRanked(level, villager.position(),
+			player.getEyePosition(), player.getLookAngle());
+		int probes = 0;
+		for (BlockPos candidate : candidates) {
+			if (probes >= 3) {
+				break;
+			}
+			probes++;
+			if (villager.getNavigation().createPath(candidate, 0) != null) {
+				state.coverPos = candidate;
+				return true;
+			}
+		}
+		// Nothing reachable: fall back to the best-scoring candidate anyway (approaching it may
+		// still improve the situation, and acting normal with zero cover is worse).
+		state.coverPos = candidates.isEmpty() ? null : candidates.get(0);
 		return state.coverPos != null;
 	}
 
@@ -1083,6 +1134,12 @@ public final class StalkerManager {
 		int dashTicks;
 		// Committed-advance counter (hysteresis on the unseen gate, see APPROACH_COMMIT_TICKS).
 		int advanceTicks;
+		// The committed approach route: hops between cover, nearest first (ApproachPlanner).
+		final ArrayDeque<Vec3> plan = new ArrayDeque<>();
+		// Player position when the plan was built; the plan is rebuilt when they stray from it.
+		Vec3 planAnchor;
+		// Ticks since the plan was built; long-lived plans are re-checked even if the player stays.
+		int planAge;
 
 		State(UUID villagerId) {
 			this.villagerId = villagerId;
@@ -1103,6 +1160,9 @@ public final class StalkerManager {
 			normalLookTicks = 0;
 			dashTicks = 0;
 			advanceTicks = 0;
+			plan.clear();
+			planAnchor = null;
+			planAge = 0;
 		}
 	}
 }
