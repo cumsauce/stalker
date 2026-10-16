@@ -50,8 +50,6 @@ public final class StalkerManager {
 	/** Spotted latch duration (plan §3). */
 	private static final int SPOTTED_LATCH_TICKS = 100;
 
-	/** Freeze fallback duration (plan §3). */
-
 	/** Peek duration (plan §3). */
 	private static final int PEEK_TICKS = 30;
 
@@ -63,8 +61,6 @@ public final class StalkerManager {
 
 	/** Strike cooldown after a stun timeout, 5 s (plan §4; no table key — nearest is chaseDurationTicks scale). */
 	private static final int STRIKE_COOLDOWN_AFTER_STUN = 100;
-
-	/** Spotted dash speed (plan §3). */
 
 	/** Within this distance of its cover the villager counts as hidden (plan §3). */
 	private static final double AT_COVER_DISTANCE = 1.5;
@@ -145,6 +141,33 @@ public final class StalkerManager {
 	/** Ticks of total unresolved absence before an orphaned binding is dropped (plan §7 gives no key; 2× relocateBehindTicks). */
 	private static final int ORPHAN_UNBIND_TICKS = 1200;
 
+	/** Stalking-mumble audibility cap: the low mumble stops at this distance regardless of phase (plan §5). */
+	private static final double MUMBLE_MAX_DISTANCE = 32.0;
+
+	/** Minimum cover distance: a cover point right on top of the villager is not really cover, so the
+	 * manager filters those out before setting a target. */
+	private static final double MIN_COVER_DISTANCE = 2.0;
+
+	/** Approach-plan hop considered "reached": the villager no longer needs to path to it. */
+	private static final double REACHED_PLAN_HOP_DISTANCE = 2.0;
+
+	/** Squared distance the move target is allowed to drift before the path is re-issued. The value is
+	 * {@code MOVE_TARGET_REPATH_DISTANCE_SQR} = 4.0 (so 2 blocks of drift) — the target is recomputed in
+	 * the planner too, but the brain re-issue catches the case where the manager keeps handing the same
+	 * target back to a now-stale navigation. */
+	private static final double MOVE_TARGET_REPATH_DISTANCE_SQR = 4.0;
+
+	/** Ticks of player movement the approach plan looks ahead when the player is visible. 30 ticks
+	 * (1.5 s) at a sprinting player's 0.28 blocks/tick is ~8 blocks of lead — enough that the stalker
+	 * visibly aims at the corner the player is running to rather than at their back. Longer and it
+	 * overshoots a player who stops; shorter and the intercept is invisible. */
+	private static final double INTERCEPT_TICKS = 30.0;
+
+	/** Smoothing factor for the player-velocity estimate: 15 % new sample, 85 % prior. Pure per-tick
+	 * velocity is noisy (knockback, ladders, the 1-tick position jitter of standing still), and the
+	 * intercept target is only useful if it reflects a real trajectory. */
+	private static final double VELOCITY_SMOOTHING = 0.15;
+
 	/** Per-player stalker state. */
 	private static final Map<UUID, State> STATES = new HashMap<>();
 
@@ -165,13 +188,21 @@ public final class StalkerManager {
 		// 26.3 Fabric renamed END_WORLD_TICK to END_LEVEL_TICK (same callback shape).
 		ServerTickEvents.END_LEVEL_TICK.register(StalkerManager::tickLevel);
 		// Drop per-player bookkeeping when a player leaves: the tick loop only sees online players,
-		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever.
+		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever;
+		// the same goes for the debug-particle toggle.
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			ServerPlayer player = handler.getPlayer();
 			if (player != null) {
 				Strikes.clear(player);
+				DEBUG_PLAYERS.remove(player.getUUID());
 			}
 		});
+	}
+
+	/** Look up the manager state for {@code player} without forcing one to be created. The single
+	 * point that calls {@code STATES.get(...)} on the read path so the key pattern is consistent. */
+	private static State stateFor(ServerPlayer player) {
+		return STATES.get(player.getUUID());
 	}
 
 	// ------------------------------------------------------------------ tick
@@ -240,9 +271,21 @@ public final class StalkerManager {
 		// genuinely absent — unloaded chunk or another dimension, so nothing is rendered — is still
 		// brought back by resolveVillager, which is unobservable.
 
+		// Single LOS computation reused by the spotted short-circuit below, the strike trigger in
+		// tickStalk and tickAmbush, and both canSee calls in tickCues. A tick-bound villager hits
+		// canSee up to three times otherwise and every call is a chunk-clip ray.
+		boolean playerCanSeeVillager = Senses.canSee(level, player, villager);
+		state.playerCanSeeVillager = playerCanSeeVillager;
+		if (playerCanSeeVillager) {
+			// The stalker's memory of where the player is only advances while it can see them. This is
+			// the input the plan is built against when the player is out of sight (see planTarget).
+			state.notePlayerSeen(player);
+		}
+
 		// Senses update (STALK and COVER both watch the spotted latch).
 		if (state.phase == Phases.Phase.STALK || state.phase == Phases.Phase.COVER) {
-			if (Senses.isSpotted(level, player, villager, c.spottedRange(), c.spottedAngleDeg())) {
+			if (Senses.isSpotted(level, player, villager, c.spottedRange(), c.spottedAngleDeg(),
+					playerCanSeeVillager)) {
 				state.spottedTicks = SPOTTED_LATCH_TICKS;
 			} else if (state.spottedTicks > 0) {
 				state.spottedTicks--;
@@ -262,7 +305,7 @@ public final class StalkerManager {
 
 		// A strike can tear the pair down mid-tick (the snatch unbinds and removes the state); the
 		// released villager must not get a parting mumble or footstep from the state it no longer owns.
-		if (STATES.get(player.getUUID()) != state) {
+		if (stateFor(player) != state) {
 			return;
 		}
 		tickCues(villager, player, state, distance, c);
@@ -281,7 +324,7 @@ public final class StalkerManager {
 		// cannot be seen — out of the player's line of sight — and close. Being viewed, even from
 		// behind, never triggers it.
 		if (state.strikeCooldown <= 0 && distance < c.strikeRange()
-			&& !Senses.canSee(level, player, villager)) {
+			&& !state.playerCanSeeVillager) {
 			Strikes.strike(villager, player);
 			state.resetMovement();
 			return;
@@ -304,7 +347,7 @@ public final class StalkerManager {
 			state.advanceTicks = 0;
 		} else if (state.advanceTicks > 0) {
 			state.advanceTicks--;
-		} else if (isApproachAllowed(player, villager)) {
+		} else if (isApproachAllowed(player, villager, state)) {
 			state.advanceTicks = APPROACH_COMMIT_TICKS;
 		}
 		boolean advancing = state.advanceTicks > 0;
@@ -323,7 +366,7 @@ public final class StalkerManager {
 			Optional<BlockPos> cover = ensureCover(level, player, villager, state, c);
 			target = cover
 				.map(pos -> Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5))
-				.filter(pos -> pos.distanceTo(villager.position()) > 2.0)
+				.filter(pos -> pos.distanceTo(villager.position()) > MIN_COVER_DISTANCE)
 				.orElse(null);
 		} else {
 			target = null;
@@ -356,10 +399,11 @@ public final class StalkerManager {
 	private static boolean tickAmbush(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
 		// Stillness: anything more than a hair of movement per tick (walking, sneaking, being pushed)
 		// resets the hold. The stored position is refreshed every tick on purpose, so a slow drift
-		// never accumulates.
+		// never accumulates. {@code player.position()} allocates a Vec3 — capture once per tick.
+		Vec3 playerPos = player.position();
 		boolean still = state.lastPlayerPos != null
-			&& state.lastPlayerPos.distanceToSqr(player.position()) < STILLNESS_DISTANCE_SQR;
-		state.lastPlayerPos = player.position();
+			&& state.lastPlayerPos.distanceToSqr(playerPos) < STILLNESS_DISTANCE_SQR;
+		state.lastPlayerPos = playerPos;
 
 		// Cheap gates first: the witness search is an entity query plus a clip per villager found,
 		// so it only runs when the strike could actually fire. The hold does not count while the
@@ -417,14 +461,24 @@ public final class StalkerManager {
 	 * or after a while even if they did not (terrain may have changed).
 	 */
 	private static Vec3 nextPlanHop(ServerLevel level, ServerPlayer player, Villager villager, State state) {
+		// Capture the three moving positions once. `player.position()` and `getEyePosition()` each
+		// allocate a new Vec3; the rebuild loop below would otherwise call them ~7 times per rebuild.
 		Vec3 playerPos = player.position();
+		Vec3 playerEye = player.getEyePosition();
+		Vec3 villagerPos = villager.position();
+		// Where the plan aims. This is deliberately NOT the player's live position: when visible the
+		// stalker intercepts (aims at where the player is going), and when the player is out of sight
+		// it plans against its own last-seen memory, which drifts stale on purpose. The sight tests
+		// below still use the live playerPos/playerEye — the stalker hides from where the player IS.
+		Vec3 planTarget = ApproachPlanner.planTarget(playerPos, state.playerVelocity,
+				state.lastSeenPlayerPos, state.playerCanSeeVillager, INTERCEPT_TICKS);
 		// Advance the queue past hops already reached.
-		while (!state.plan.isEmpty() && villager.position().distanceTo(state.plan.peek()) < 2.0) {
+		while (!state.plan.isEmpty() && villagerPos.distanceTo(state.plan.peek()) < REACHED_PLAN_HOP_DISTANCE) {
 			state.plan.poll();
 		}
 		boolean stale = state.plan.isEmpty()
 			|| state.planAnchor == null
-			|| state.planAnchor.distanceTo(playerPos) > PLAN_STALE_DISTANCE
+			|| state.planAnchor.distanceTo(planTarget) > PLAN_STALE_DISTANCE
 			|| state.planAge++ > PLAN_MAX_AGE_TICKS;
 		if (!stale) {
 			Vec3 hop = state.plan.peek();
@@ -443,45 +497,63 @@ public final class StalkerManager {
 		record Ranked(Vec3 point, double score) {}
 		List<Ranked> ranked = new ArrayList<>();
 		for (double fraction : APPROACH_FRACTIONS) {
-			Vec3 sample = villager.position().lerp(playerPos, fraction);
+			Vec3 sample = villagerPos.lerp(planTarget, fraction);
 			for (BlockPos pos : CoverSearch.findApproachPoint(level, sample,
-					player.getEyePosition(), player.position()).stream().limit(2).toList()) {
+					playerEye, playerPos).stream().limit(2).toList()) {
 				Vec3 point = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
 				double hiddenness = CoverSearch.hiddennessOf(level, point.add(0.0, 1.6, 0.0),
-						player.getEyePosition(), playerPos);
-				double leg = villager.position().distanceTo(point);
+						playerEye, playerPos);
+				double leg = villagerPos.distanceTo(point);
 				// Leg score: how far it is, how slow the ground is (water etc.), plus the exposure
 				// penalty — a hidden spot that costs a wade is not a good spot.
-				double cost = leg + CoverSearch.terrainCost(level, villager.position(), point)
+				double cost = leg + CoverSearch.terrainCost(level, villagerPos, point)
 					+ (1.0 - hiddenness) * CoverSearch.EXPOSURE_PENALTY;
 				ranked.add(new Ranked(point, cost));
 			}
 		}
 		ranked.sort((a, b) -> Double.compare(a.score(), b.score()));
 		List<Vec3> candidates = ranked.stream().map(Ranked::point).toList();
-		Predicate<Vec3> seen = point -> Senses.canSee(level, player.getEyePosition(), point.add(0.0, 1.0, 0.0));
-		List<Vec3> hops = ApproachPlanner.plan(villager.position(), playerPos, candidates, seen);
+		Predicate<Vec3> seen = point -> Senses.canSee(level, playerEye, point.add(0.0, 1.0, 0.0));
+		List<Vec3> hops = ApproachPlanner.plan(villagerPos, planTarget, candidates, seen);
 		state.plan.clear();
 		state.plan.addAll(hops);
-		state.planAnchor = playerPos;
+		state.planAnchor = planTarget;
 		state.planAge = 0;
 		state.planRebuildCooldown = PLAN_REBUILD_COOLDOWN_TICKS;
 		Vec3 hop = state.plan.peek();
 		return hop == null ? null : hop;
 	}
 
-	/** Unseen-approach gate (plan §2): player looking away (dot ≤ 0.35) or LOS blocked. */
-	private static boolean isApproachAllowed(ServerPlayer player, Villager villager) {
+	/** Unseen-approach gate (plan §2): player looking away (dot ≤ 0.35) or LOS blocked. The cached
+	 * {@code playerCanSeeVillager} from {@code State} is used when available so this call doesn't redo the
+	 * chunk clip every time it is checked. */
+	private static boolean isApproachAllowed(ServerPlayer player, Villager villager, State state) {
 		double dot = Senses.lookDot(player.getLookAngle(), player.getEyePosition(), villager.getEyePosition());
-		return dot <= APPROACH_DOT || !Senses.canSee(player.level(), player, villager);
+		return dot <= APPROACH_DOT || !state.playerCanSeeVillager;
 	}
 
 	// ---------------------------------------------------------------- COVER
 
+	/** Range of the pause between peeks (140..260 ticks = 7..13 s), chosen so the player can never time
+	 * a peek out mechanically. Used both on {@link #enterCover} and as the reset after a peek. */
+	private static final int PEEK_COOLDOWN_MIN_TICKS = 140;
+	private static final int PEEK_COOLDOWN_MAX_EXCLUSIVE_TICKS = 261; // exclusive upper bound on nextInt
+
+	/** Picks a fresh peek cooldown (140–260 ticks = 7–13 s). Centralises the magic-number pair that
+	 * otherwise appears in {@link #enterCover} and the per-peek reset. */
+	private static int rollPeekCooldown(ServerLevel level) {
+		return PEEK_COOLDOWN_MIN_TICKS + level.getRandom().nextInt(PEEK_COOLDOWN_MAX_EXCLUSIVE_TICKS - PEEK_COOLDOWN_MIN_TICKS);
+	}
+
 	private static void enterCover(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c) {
 		state.phase = Phases.Phase.COVER;
 		state.unspottedTicks = 0;
-		state.peekCooldown = state.peekCooldown <= 0 ? 140 + level.getRandom().nextInt(121) : state.peekCooldown;
+		// Re-entering cover keeps any peek cooldown that was already running; only fresh cover entries
+		// (peekCooldown at the sentinel 0) get a new roll. The inherited branch is rarely taken in
+		// practice but matters when the manager toggles STALK→COVER multiple times within a second.
+		if (state.peekCooldown <= 0) {
+			state.peekCooldown = rollPeekCooldown(level);
+		}
 		state.coverPos = null;
 		// A dash for cover is urgent: bypass the routine search throttle, otherwise a spotted
 		// villager inside the cooldown window finds nothing and falls through to the freeze.
@@ -493,7 +565,7 @@ public final class StalkerManager {
 	private static void tickCover(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
 		// Same hidden-only rule as STALK: strike from cover when unseen, out of LOS, and close.
 		if (state.strikeCooldown <= 0 && distance < c.strikeRange()
-			&& !Senses.canSee(level, player, villager)) {
+			&& !state.playerCanSeeVillager) {
 			villager.setPose(Pose.STANDING);
 			Strikes.strike(villager, player);
 			state.resetMovement();
@@ -557,7 +629,7 @@ public final class StalkerManager {
 				if (state.peekCooldown <= 0) {
 					state.peekTicks = PEEK_TICKS;
 					state.peekSide = level.getRandom().nextBoolean();
-					state.peekCooldown = 140 + level.getRandom().nextInt(121);
+					state.peekCooldown = rollPeekCooldown(level);
 					Cues.peek(villager);
 				}
 			}
@@ -710,7 +782,7 @@ public final class StalkerManager {
 		if (state.mumbleCooldown > 0) {
 			state.mumbleCooldown--;
 		} else {
-			if (distance <= 32.0) {
+			if (distance <= MUMBLE_MAX_DISTANCE) {
 				Cues.stalkingMumble(villager);
 			}
 			int span = Math.max(1, c.mumbleMaxIntervalTicks() - c.mumbleMinIntervalTicks() + 1);
@@ -719,14 +791,14 @@ public final class StalkerManager {
 		if (state.footstepCooldown > 0) {
 			state.footstepCooldown--;
 		} else if (state.lastTarget != null && distance >= c.footstepMinDistance() && distance <= c.footstepMaxDistance()
-			&& !Senses.canSee(player.level(), player, villager)) {
+			&& !state.playerCanSeeVillager) {
 			Cues.footstep(villager);
 			state.footstepCooldown = c.footstepIntervalTicks();
 		}
 		// Dread heartbeat once it is close and hidden: the tell that something is right there.
 		if (state.heartbeatCooldown > 0) {
 			state.heartbeatCooldown--;
-		} else if (distance <= CLOSE_HEARTBEAT_DISTANCE && !Senses.canSee(player.level(), player, villager)) {
+		} else if (distance <= CLOSE_HEARTBEAT_DISTANCE && !state.playerCanSeeVillager) {
 			Cues.closeHeartbeat(villager, c.chaseHeartbeatVolume());
 			state.heartbeatCooldown = CLOSE_HEARTBEAT_INTERVAL_TICKS;
 		}
@@ -738,7 +810,7 @@ public final class StalkerManager {
 	private static void issueMovement(Villager villager, State state, Vec3 target, float speed) {
 		if (target != null) {
 			boolean stale = state.lastTarget == null
-				|| state.lastTarget.distanceToSqr(target) > 4.0
+				|| state.lastTarget.distanceToSqr(target) > MOVE_TARGET_REPATH_DISTANCE_SQR
 				|| state.ticksSinceIssue >= 10;
 			if (stale) {
 				StalkerBrain.setTarget(villager, target, speed);
@@ -1057,7 +1129,7 @@ public final class StalkerManager {
 
 	/** Human-readable status line (/stalker status). */
 	public static String status(ServerPlayer player) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		if (state == null) {
 			return "no binding";
 		}
@@ -1081,7 +1153,7 @@ public final class StalkerManager {
 
 	/** Forces a phase (/stalker phase). Test hook. */
 	public static void forcePhase(ServerPlayer player, Phases.Phase phase) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		if (state == null) {
 			return;
 		}
@@ -1106,7 +1178,7 @@ public final class StalkerManager {
 
 	/** Forces the spotted condition for 100 ticks (/stalker spot). */
 	public static void forceSpot(ServerPlayer player) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		if (state != null) {
 			state.spottedTicks = SPOTTED_LATCH_TICKS;
 		}
@@ -1114,7 +1186,7 @@ public final class StalkerManager {
 
 	/** Forces a variant B strike now (/stalker strike). */
 	public static void forceStrike(ServerPlayer player) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		if (state == null || !(player.level() instanceof ServerLevel level)) {
 			return;
 		}
@@ -1150,7 +1222,7 @@ public final class StalkerManager {
 
 	/** Current phase of the player's stalker, or null when unbound (bribe gating: STALK/COVER accept bribes). */
 	public static Phases.Phase getPhase(ServerPlayer player) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		return state == null ? null : state.phase;
 	}
 
@@ -1175,7 +1247,7 @@ public final class StalkerManager {
 
 	/** Applies the 5-second post-stun strike cooldown; called by Strikes (plan §4). */
 	public static void noteStrikeCooldown(ServerPlayer player) {
-		State state = STATES.get(player.getUUID());
+		State state = stateFor(player);
 		if (state != null) {
 			state.strikeCooldown = STRIKE_COOLDOWN_AFTER_STUN;
 		}
@@ -1282,6 +1354,22 @@ public final class StalkerManager {
 		// Rate limit on plan rebuilds (see nextPlanHop): rebuilding is hundreds of occlusion clips.
 		int planRebuildCooldown;
 
+		/** Cached line-of-sight (player → villager eyes) computed once per {@code tickStalker} call and
+		 * shared by spotted-check, strike-trigger, patience-strike and the cue ticks. Reduces up to three
+		 * chunk-clip rays per tick per bound villager to one. */
+		boolean playerCanSeeVillager;
+
+		// ---- planning model of the player (see ApproachPlanner.planTarget) ----
+
+		/** Player position on the previous tick, used to estimate velocity. */
+		Vec3 prevPlayerPosForVelocity;
+		/** Smoothed player velocity (blocks per tick), or null before the second tick. */
+		Vec3 playerVelocity;
+		/** Where the stalker last saw the player. While the player is out of sight this drifts out of
+		 * date on purpose — it is the stalker's memory, and the plan is built against it, not against
+		 * the player's live position. */
+		Vec3 lastSeenPlayerPos;
+
 		State(UUID villagerId) {
 			this.villagerId = villagerId;
 		}
@@ -1293,6 +1381,22 @@ public final class StalkerManager {
 			if (planRebuildCooldown > 0) {
 				planRebuildCooldown--;
 			}
+			// Velocity estimate: one smoothed Vec3 per tick. The intercept target is only useful if
+			// it reflects a real trajectory, so the raw per-tick delta is blended in rather than used.
+			Vec3 playerPos = player.position();
+			if (prevPlayerPosForVelocity != null) {
+				Vec3 instVel = playerPos.subtract(prevPlayerPosForVelocity);
+				playerVelocity = playerVelocity == null
+					? instVel
+					: playerVelocity.scale(1.0 - VELOCITY_SMOOTHING).add(instVel.scale(VELOCITY_SMOOTHING));
+			}
+			prevPlayerPosForVelocity = playerPos;
+		}
+
+		/** Refreshes the stalker's memory of where it last saw the player. Called every tick with the
+		 * just-computed LOS so the memory only ever advances while the player is actually visible. */
+		void notePlayerSeen(ServerPlayer player) {
+			lastSeenPlayerPos = player.position();
 		}
 
 		void resetMovement() {

@@ -1,9 +1,9 @@
 package io.github.cumsauce.stalker.strike;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
 import io.github.cumsauce.stalker.config.StalkerConfig;
@@ -42,8 +42,8 @@ public final class Strikes {
 	/** How often the dazed villager picks a new slow look target while stunned. */
 	private static final int STUN_LOOK_INTERVAL_TICKS = 20;
 
-	private static final Map<UUID, ChaseState> CHASE = new ConcurrentHashMap<>();
-	private static final Map<UUID, StunState> STUN = new ConcurrentHashMap<>();
+	private static final Map<UUID, ChaseState> CHASE = new HashMap<>();
+	private static final Map<UUID, StunState> STUN = new HashMap<>();
 
 	private Strikes() {
 	}
@@ -53,7 +53,16 @@ public final class Strikes {
 		int hits;
 		int ticks;
 		int ticksSinceHit;
+		/** Last behind-the-player target issued to {@code StalkerBrain.setTarget}; used to throttle
+		 * re-issuing so we don't replace the brain's STALKING_TARGET Vec3 (and allocate one) every
+		 * tick when the player has barely moved. The brain's MoveTargetTask only re-paths past its
+		 * own distance threshold, so once we cap re-issues here the A* doesn't run more than it
+		 * already would. */
+		Vec3 lastTarget;
 	}
+
+	/** Distance in blocks the player must move before the chase re-issues its move target. */
+	private static final double CHASE_REPATH_DISTANCE = 1.0;
 
 	/** Per-player stun progress. */
 	private static final class StunState {
@@ -148,9 +157,16 @@ public final class Strikes {
 		StalkerConfig cfg = StalkerConfig.get();
 		ChaseState state = CHASE.computeIfAbsent(player.getUUID(), id -> new ChaseState());
 
-		// Prefer the point 1.5 blocks behind the player (position minus look).
+		// Prefer the point 1.5 blocks behind the player (position minus look). Re-issuing the brain
+		// memory every tick allocates a fresh Vec3 even when the player has barely moved; the brain's
+		// MoveTargetTask only re-paths past its own distance threshold, so throttle the wrapper too.
 		Vec3 behind = player.position().subtract(player.getLookAngle().scale(1.5));
-		StalkerBrain.setTarget(villager, behind, (float) cfg.chaseSpeed());
+		boolean reissue = state.lastTarget == null
+			|| state.lastTarget.distanceToSqr(behind) > CHASE_REPATH_DISTANCE * CHASE_REPATH_DISTANCE;
+		if (reissue) {
+			StalkerBrain.setTarget(villager, behind, (float) cfg.chaseSpeed());
+			state.lastTarget = behind;
+		}
 		StalkerBrain.lookAt(villager, player);
 
 		state.ticks++;
@@ -219,9 +235,10 @@ public final class Strikes {
 		if (state.ticksSinceLook >= STUN_LOOK_INTERVAL_TICKS) {
 			state.ticksSinceLook = 0;
 			// Slow random look targets — head lolling.
-			double angle = Math.random() * Math.PI * 2.0;
-			double dist = 3.0 + Math.random() * 5.0;
-			Vec3 look = villager.position().add(Math.cos(angle) * dist, 0.5 + Math.random() * 1.5, Math.sin(angle) * dist);
+			ThreadLocalRandom rng = ThreadLocalRandom.current();
+			double angle = rng.nextDouble() * Math.PI * 2.0;
+			double dist = 3.0 + rng.nextDouble() * 5.0;
+			Vec3 look = villager.position().add(Math.cos(angle) * dist, 0.5 + rng.nextDouble() * 1.5, Math.sin(angle) * dist);
 			villager.getLookControl().setLookAt(look.x, look.y, look.z, 5.0f, 5.0f);
 		}
 

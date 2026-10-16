@@ -18,7 +18,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.level.pathfinder.Path;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
@@ -71,19 +73,6 @@ public final class StalkerBrain {
 		new Activity("stalking")
 	);
 
-	private static boolean registered = false;
-
-	// Class-load trigger: guarantee registration before any villager brain is built, idempotently
-	// (static init itself only runs once per classloader, but a datapack/reload must not re-register).
-	private static synchronized void ensureRegistered() {
-		if (registered) {
-			return;
-		}
-		// Touching the constants forces their own static-init block on this class in declaration order;
-		// the guard only protects against a second ensureRegistered call after, e.g., a reset.
-		registered = true;
-	}
-
 	private static <U> MemoryModuleType<U> registerMemory(String name, Codec<U> codec) {
 		return Registry.register(
 			BuiltInRegistries.MEMORY_MODULE_TYPE,
@@ -92,19 +81,16 @@ public final class StalkerBrain {
 		);
 	}
 
-	static {
-		ensureRegistered();
-	}
-
 	private StalkerBrain() {
 	}
 
 	/**
-	 * Forces this class's static initializer (and so the Activity/memory registrations) to run at
-	 * mod-init time. Fabric freezes {@code BuiltInRegistries} right after mod init, and a
-	 * {@code Registry.register} into a frozen registry throws. The mixin's first call happens at the
-	 * first villager's brain build — a world load — which is far too late. {@code Stalker.onInitialize}
-	 * calls this.
+	 * Touched from {@code Stalker.onInitialize} so the JVM runs this class's static initializer
+	 * (the {@link Registry#register} calls above) before Fabric freezes {@link BuiltInRegistries}.
+	 * Without this reference, the mixin's first call happens at the first villager's brain build —
+	 * a world load — which is far too late: {@code Registry.register} into a frozen registry throws.
+	 * The registrations themselves are statement-level {@code static final} field initializers and
+	 * run on class load, so the body of this method is intentionally empty.
 	 */
 	public static void bootstrap() {
 	}
@@ -298,6 +284,10 @@ public final class StalkerBrain {
 		 * the vanilla OpenDoor task, but that keys off the WALK_TARGET memory, which this task
 		 * deliberately does not use (plan Risk #1) — so the villager would otherwise bump into every
 		 * closed door between it and the player. Doors are left open behind it, which suits it.
+		 *
+		 * <p>The path only contains nodes for the lower half of each door (the villager walks through at
+		 * feet level); the upper half is not in the path. Toggling the lower half alone leaves the
+		 * door visually half-open, so both halves are opened together.
 		 */
 		private void openDoorsOnPath(ServerLevel level, PathNavigation navigation) {
 			Path path = navigation.getPath();
@@ -306,11 +296,17 @@ public final class StalkerBrain {
 			}
 			for (int i = 0; i < Math.min(3, path.getNodeCount()); i++) {
 				BlockPos nodePos = path.getNodePos(i);
-				var state = level.getBlockState(nodePos);
-				if (state.getBlock() instanceof DoorBlock door && !state.getValue(DoorBlock.OPEN)) {
-					level.setBlock(nodePos, state.setValue(DoorBlock.OPEN, true), 3);
-					level.playSound(null, nodePos, SoundEvents.WOODEN_DOOR_OPEN, SoundSource.BLOCKS, 0.8F, 1.0F);
+				BlockState state = level.getBlockState(nodePos);
+				if (!(state.getBlock() instanceof DoorBlock) || state.getValue(DoorBlock.OPEN)) {
+					continue;
 				}
+				BlockPos above = nodePos.above();
+				BlockState aboveState = level.getBlockState(above);
+				level.setBlock(nodePos, state.setValue(DoorBlock.OPEN, true), Block.UPDATE_ALL);
+				if (aboveState.getBlock() instanceof DoorBlock) {
+					level.setBlock(above, aboveState.setValue(DoorBlock.OPEN, true), Block.UPDATE_ALL);
+				}
+				level.playSound(null, nodePos, SoundEvents.WOODEN_DOOR_OPEN, SoundSource.BLOCKS, 0.8F, 1.0F);
 			}
 		}
 

@@ -15,6 +15,14 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class Senses {
 
+	/**
+	 * Cached collisionless context: {@link net.minecraft.world.phys.shapes.CollisionContext#empty()} returns the
+	 * same singleton instance, but caching the import + lookup avoids walking a fully qualified path on every LOS
+	 * test. {@code canSee} is one of the hot-path callers (a tick-bound villager can hit it three times per tick).
+	 */
+	private static final net.minecraft.world.phys.shapes.CollisionContext COLLISIONLESS =
+			net.minecraft.world.phys.shapes.CollisionContext.empty();
+
 	private Senses() {
 	}
 
@@ -23,7 +31,10 @@ public final class Senses {
 	 * {@code ClipContext.Block.VISUAL}; blocked means no LOS.
 	 */
 	public static boolean canSee(BlockGetter level, Vec3 fromEye, Vec3 toEye) {
-		ClipContext ctx = new ClipContext(fromEye, toEye, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, collisionless());
+		// The ClipContext must be a fresh allocation because it stores the start/end vectors; the collision shape
+		// context it wraps is the cached singleton.
+		ClipContext ctx = new ClipContext(fromEye, toEye, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE,
+				COLLISIONLESS);
 		return level.clip(ctx).getType() == HitResult.Type.MISS;
 	}
 
@@ -56,16 +67,27 @@ public final class Senses {
 	}
 
 	/**
-	 * Plan §3 spotted test: LOS clear AND within the cone AND within range.
+	 * Plan §3 spotted test: LOS clear AND within the cone AND within range. The caller may pass a
+	 * {@code precomputedCanSee} value already computed for this tick (e.g. via
+	 * {@link #canSee(Level, Player, Entity)}) to avoid running the chunk-clip ray twice in the same
+	 * tick; pass {@code null} to compute it here.
 	 */
-	public static boolean isSpotted(Level level, Player player, Entity villager, double range, double coneAngleDegrees) {
+	public static boolean isSpotted(Level level, Player player, Entity villager, double range,
+			double coneAngleDegrees, Boolean precomputedCanSee) {
 		if (player.distanceTo(villager) > range) {
 			return false;
 		}
 		if (!inLookCone(player.getLookAngle(), player.getEyePosition(), villager.getEyePosition(), coneAngleDegrees)) {
 			return false;
 		}
-		return canSee(level, player, villager);
+		return precomputedCanSee != null ? precomputedCanSee : canSee(level, player, villager);
+	}
+
+	/**
+	 * Plan §3 spotted test: LOS clear AND within the cone AND within range.
+	 */
+	public static boolean isSpotted(Level level, Player player, Entity villager, double range, double coneAngleDegrees) {
+		return isSpotted(level, player, villager, range, coneAngleDegrees, null);
 	}
 
 	/**
@@ -74,14 +96,5 @@ public final class Senses {
 	 */
 	public static boolean lookingAtPos(Player player, Vec3 pos, double coneAngleDegrees) {
 		return inLookCone(player.getLookAngle(), player.getEyePosition(), pos, coneAngleDegrees);
-	}
-
-	/**
-	 * The ClipContext entity is only used for collision-shape personalisation
-	 * (scaffolding posing); a collisionless context keeps the clip purely
-	 * visual-shape based without needing a live entity in the pure path.
-	 */
-	private static net.minecraft.world.phys.shapes.CollisionContext collisionless() {
-		return net.minecraft.world.phys.shapes.CollisionContext.empty();
 	}
 }

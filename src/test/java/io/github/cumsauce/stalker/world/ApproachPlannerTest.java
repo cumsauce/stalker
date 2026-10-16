@@ -98,4 +98,49 @@ class ApproachPlannerTest {
 		java.util.function.Predicate<Vec3> clearMid = p -> !visibleAt.contains(p.x);
 		assertFalse(ApproachPlanner.legCrossesSight(from, to, clearMid));
 	}
+
+	// ---------------------------------------------------------------- plan target
+
+	@Test
+	@DisplayName("visible + moving: the plan aims ahead of the player, not at them")
+	void visibleMovingPlansAhead() {
+		Vec3 playerPos = new Vec3(10, 0, 0);
+		Vec3 velocity = new Vec3(1, 0, 0); // one block per tick
+		Vec3 target = ApproachPlanner.planTarget(playerPos, velocity, null, true, 8.0);
+		assertEquals(new Vec3(18, 0, 0), target);
+	}
+
+	@Test
+	@DisplayName("visible but the player is stationary: plan at their live position")
+	void visibleStillPlansAtPlayer() {
+		Vec3 playerPos = new Vec3(10, 0, 0);
+		Vec3 target = ApproachPlanner.planTarget(playerPos, Vec3.ZERO, null, true, 8.0);
+		assertEquals(playerPos, target);
+	}
+
+	@Test
+	@DisplayName("first tick, no velocity estimate yet: plan at the live position")
+	void nullVelocityPlansAtPlayer() {
+		Vec3 playerPos = new Vec3(10, 0, 0);
+		Vec3 target = ApproachPlanner.planTarget(playerPos, null, null, true, 8.0);
+		assertEquals(playerPos, target);
+	}
+
+	@Test
+	@DisplayName("unseen: the plan aims at where the stalker last saw the player, not the live one")
+	void unseenPlansAtLastSeen() {
+		Vec3 livePos = new Vec3(50, 0, 0);
+		Vec3 lastSeen = new Vec3(10, 0, 0);
+		Vec3 velocity = new Vec3(1, 0, 0); // even with a velocity, an unseen player is not extrapolated
+		Vec3 target = ApproachPlanner.planTarget(livePos, velocity, lastSeen, false, 8.0);
+		assertEquals(lastSeen, target, "stale memory — the stalker's model is out of date on purpose");
+	}
+
+	@Test
+	@DisplayName("unseen with no memory yet: fall back to the live position")
+	void unseenWithoutMemoryPlansAtPlayer() {
+		Vec3 playerPos = new Vec3(10, 0, 0);
+		Vec3 target = ApproachPlanner.planTarget(playerPos, Vec3.ZERO, null, false, 8.0);
+		assertEquals(playerPos, target);
+	}
 }

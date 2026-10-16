@@ -2,6 +2,7 @@ package io.github.cumsauce.stalker.command;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -77,27 +78,21 @@ public final class StalkerCommands {
 				.then(target("debug", StalkerCommands::debug))
 				.then(Commands.literal("spawn")
 						.executes(context -> reply(context.getSource(), spawn(source(context), 12), true))
-						.then(Commands.argument("count", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 64))
+						.then(Commands.argument("count", IntegerArgumentType.integer(1, 64))
 								.executes(context -> reply(context.getSource(),
 										spawn(source(context),
-												com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "count")),
+												IntegerArgumentType.getInteger(context, "count")),
 												true))))
 				.then(Commands.literal("village")
 						.executes(context -> reply(context.getSource(), village(source(context), 4), true))
-						.then(Commands.argument("huts", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 8))
+						.then(Commands.argument("huts", IntegerArgumentType.integer(1, 8))
 								.executes(context -> reply(context.getSource(),
 										village(source(context),
-												com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "huts")),
+												IntegerArgumentType.getInteger(context, "huts")),
 												true))));
 		dispatcher.register(root);
 	}
 
-	/**
-	 * Debug helper ({@code /stalker spawn [count]}): scatters {@code count} adult villagers with
-	 * random professions on standable ground in a ring around the player, so a village does not have
-	 * to be found or built by hand to exercise the mod. Jobs are drawn from the profession registry
-	 * (nitwits and the unemployed filtered out); ground is taken from the motion-blocking heightmap.
-	 */
 	/**
 	 * Debug helper ({@code /stalker village [huts]}): builds a bell, {@code huts} simple huts (door,
 	 * bed, torch, roof) and one employed villager per hut around the player. Block-level, so it
@@ -113,6 +108,13 @@ public final class StalkerCommands {
 				+ (professions.isEmpty() ? "" : ": " + String.join(", ", professions));
 	}
 
+	/**
+	 * Debug helper ({@code /stalker spawn [count]}): places a vanilla {@code village_plains} at the
+	 * player's position via the {@code /place} command, scatters {@code count} (default 12) extra
+	 * employed villagers in a ring (so the binding has a candidate even if the structure's own
+	 * villagers land out of reach), and binds a stalker immediately. Returns a human-readable
+	 * summary suitable for the chat reply.
+	 */
 	private static String spawn(ServerPlayer player, int count) {
 		if (!(player.level() instanceof ServerLevel level)) {
 			return "not in a server level.";

@@ -87,4 +87,39 @@ public final class ApproachPlanner {
 		Vec3 mid = from.lerp(to, 0.5);
 		return visibleToPlayer.test(mid);
 	}
+
+	/**
+	 * Where the stalker's plan should aim — the only input that makes the approach look like it is
+	 * thinking rather than chasing a marker on the player's position.
+	 *
+	 * <p>Two rules, chosen by whether the player is currently visible:
+	 * <ul>
+	 * <li><b>Visible — intercept.</b> Plan toward {@code playerPos + playerVelocity * interceptTicks}:
+	 * the point the player will reach if they keep moving the way they are moving. A stalker that
+	 * aims at the future cuts the player off instead of following in their footsteps.</li>
+	 * <li><b>Not visible — stale memory.</b> Plan toward {@code lastSeenPlayerPos}, where the stalker
+	 * last <em>saw</em> the player. Its model of the player is now out of date by however long the
+	 * player has been out of sight, so the plan walks the wrong way — and the player cannot tell
+	 * whether the stalker is coming for them or wandering off.</li>
+	 * </ul>
+	 *
+	 * <p>Both rules make the plan target diverge from the player's live position on purpose. The
+	 * divergence is the design: a stalker that always plans toward the live position is legible, and
+	 * legibility is the opposite of the dread the mod is built on. Neither rule ever confirms the
+	 * player got away — they only make the stalker's intentions ambiguous.
+	 *
+	 * @param playerPos the player's live position
+	 * @param playerVelocity the player's smoothed velocity (blocks per tick), or null on the first tick
+	 * @param lastSeenPlayerPos where the stalker last saw the player, or null if it never has
+	 * @param canSeePlayer whether the stalker currently has line of sight to the player
+	 * @param interceptTicks how many ticks of player movement to look ahead when visible
+	 * @return the point the approach plan should aim at
+	 */
+	public static Vec3 planTarget(Vec3 playerPos, Vec3 playerVelocity, Vec3 lastSeenPlayerPos,
+			boolean canSeePlayer, double interceptTicks) {
+		if (!canSeePlayer) {
+			return lastSeenPlayerPos != null ? lastSeenPlayerPos : playerPos;
+		}
+		return playerVelocity == null ? playerPos : playerPos.add(playerVelocity.scale(interceptTicks));
+	}
 }

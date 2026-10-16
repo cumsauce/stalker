@@ -84,13 +84,19 @@ public final class BribeInteract {
 	}
 
 	private static void tick(MinecraftServer server) {
+		long now = server.getTickCount();
 		Iterator<PendingChase> it = PENDING.iterator();
 		while (it.hasNext()) {
 			PendingChase chase = it.next();
-			if (server.getTickCount() < chase.fireAtTick()) continue;
-			it.remove();
+			// Drop entries whose player left the server; otherwise the entry sits in PENDING for
+			// the JVM's lifetime and grows across a long-running server.
 			ServerPlayer player = server.getPlayerList().getPlayer(chase.player());
-			if (player == null) continue;
+			if (player == null) {
+				it.remove();
+				continue;
+			}
+			if (now < chase.fireAtTick()) continue;
+			it.remove();
 			// A real accept in the window (or a command unbind) cancels the betrayal.
 			UUID bound = Attachments.boundVillager(player).orElse(null);
 			if (bound == null || !bound.equals(chase.villager())) continue;

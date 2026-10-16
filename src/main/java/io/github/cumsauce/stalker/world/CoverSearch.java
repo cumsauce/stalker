@@ -6,6 +6,7 @@ import java.util.Optional;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -20,11 +21,14 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class CoverSearch {
 
-	/** Radii searched around the villager, per the plan. */
-	public static final int[] RADII = {4, 7, 10};
+	/** Radii searched around the villager, per the plan. Private because the array contents are shared
+	 * mutable state — exposing them invites an external mutation that would silently corrupt cover
+	 * search rankings. */
+	private static final int[] RADII = {4, 7, 10};
 
-	/** Y offsets tried per horizontal candidate (±3, top-down so high ground wins ties). */
-	public static final int[] Y_SPREAD = {0, 1, 2, 3, -1, -2, -3};
+	/** Y offsets tried per horizontal candidate (±3, top-down so high ground wins ties). Same caveat
+	 * as {@link #RADII}. */
+	private static final int[] Y_SPREAD = {0, 1, 2, 3, -1, -2, -3};
 
 	/** Number of compass directions. */
 	public static final int DIRECTIONS = 16;
@@ -84,7 +88,7 @@ public final class CoverSearch {
 	private static double coneExposure(BlockPos cover, Vec3 villagerPos, Vec3 playerEye, Vec3 look) {
 		double exposure = 0.0;
 		Vec3 to = Vec3.atLowerCornerOf(cover).add(0.5, 1.0, 0.5);
-		for (double f : new double[] {0.25, 0.5, 0.75}) {
+		for (double f : ESCAPE_FRACTIONS) {
 			Vec3 sample = villagerPos.lerp(to, f).add(0.0, 1.0, 0.0);
 			Vec3 rel = sample.subtract(playerEye);
 			double len = rel.length();
@@ -110,6 +114,24 @@ public final class CoverSearch {
 	/** Eye-sample offsets around the player used to measure how hidden a spot is. */
 	private static final double[] HIDDENNESS_SAMPLES = {0.0, 2.0, -2.0, 3.0, -3.0};
 
+	/** Radii searched around a standable approach anchor: tighter than the cover ring because the
+	 * villager is already near the player and the planner just needs a one-step hop. */
+	private static final int[] APPROACH_RADII = {2, 3, 4};
+
+	/** Y offsets tried per approach candidate — small spread, the planner is for short hops. */
+	private static final int[] APPROACH_Y = {0, 1, -1, 2, -2};
+
+	/** Three evenly-spaced fractions of the escape segment used to score cone exposure (0.25, 0.5, 0.75
+	 * of the way to cover). Lifting it out of {@code coneExposure} saves a small array allocation per
+	 * comparator invocation. */
+	private static final double[] ESCAPE_FRACTIONS = {0.25, 0.5, 0.75};
+
+	/** Single-eye overload shortcut: avoids a one-element Vec3[] allocation per cover candidate in the
+	 * hot path of {@link #findApproachPoint}. Delegates to the no-array variant. */
+	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
+		return isCoverSingle(level, pos, viewerEye);
+	}
+
 	/**
 	 * An approach step (staged closing): a standable, LOS-blocked spot near
 	 * {@code around}, which sits on the line toward the player. Scored by how
@@ -124,12 +146,15 @@ public final class CoverSearch {
 			double angle = (Math.PI * 2.0 * i) / DIRECTIONS;
 			double dx = Math.cos(angle);
 			double dz = Math.sin(angle);
-			for (int radius : new int[] {2, 3, 4}) {
-				int x = BlockPos.containing(around.x + dx * radius, 0.0, 0.0).getX();
-				int z = BlockPos.containing(0.0, 0.0, around.z + dz * radius).getZ();
-				for (int dy : new int[] {0, 1, -1, 2, -2}) {
-					BlockPos pos = new BlockPos(x, BlockPos.containing(0.0, around.y, 0.0).getY() + dy, z);
-					if (!isCover(level, pos, new Vec3[] {playerEye})) {
+			// Pre-floored Y of {@code around}: reused for every candidate so we don't re-floor on each
+			// inner iteration of a 16×3×5 = 240 candidate sweep.
+			int aroundY = Mth.floor(around.y);
+			for (int radius : APPROACH_RADII) {
+				int x = Mth.floor(around.x + dx * radius);
+				int z = Mth.floor(around.z + dz * radius);
+				for (int dy : APPROACH_Y) {
+					BlockPos pos = new BlockPos(x, aroundY + dy, z);
+					if (!isCover(level, pos, playerEye)) {
 						continue;
 					}
 					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
@@ -205,13 +230,13 @@ public final class CoverSearch {
 			double angle = (Math.PI * 2.0 * i) / DIRECTIONS;
 			double dx = Math.cos(angle);
 			double dz = Math.sin(angle);
+			// Pre-floored centre Y: the inner loop iterates {@code ySpread} over a single anchor.
+			int centreY = Mth.floor(centre.y);
 			for (int radius : radii) {
-				double cx = centre.x + dx * radius;
-				double cz = centre.z + dz * radius;
-				int x = BlockPos.containing(cx, 0.0, cz).getX();
-				int z = BlockPos.containing(cx, 0.0, cz).getZ();
+				int x = Mth.floor(centre.x + dx * radius);
+				int z = Mth.floor(centre.z + dz * radius);
 				for (int dy : ySpread) {
-					BlockPos pos = new BlockPos(x, BlockPos.containing(0.0, centre.y, 0.0).getY() + dy, z);
+					BlockPos pos = new BlockPos(x, centreY + dy, z);
 					if (!isCover(level, pos, viewerEyes)) {
 						continue;
 					}
@@ -246,14 +271,7 @@ public final class CoverSearch {
 	 * water).
 	 */
 	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3[] viewerEyes) {
-		BlockPos below = pos.below();
-		if (!level.getBlockState(below).isSolid()) {
-			return false;
-		}
-		if (!isPassable(level, pos) || !isPassable(level, pos.above())) {
-			return false;
-		}
-		if (isFluid(level, pos) || isFluid(level, pos.above()) || isFluid(level, below)) {
+		if (!isStandableCover(level, pos)) {
 			return false;
 		}
 		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
@@ -263,6 +281,30 @@ public final class CoverSearch {
 			}
 		}
 		return true;
+	}
+
+	/** Shared standability pre-test (solid below, passable cells, no fluid). The full multi-eye
+	 * {@link #isCover(ServerLevel, BlockPos, Vec3[])} and the single-eye shorthand both gate on it. */
+	private static boolean isStandableCover(ServerLevel level, BlockPos pos) {
+		BlockPos below = pos.below();
+		if (!level.getBlockState(below).isSolid()) {
+			return false;
+		}
+		if (!isPassable(level, pos) || !isPassable(level, pos.above())) {
+			return false;
+		}
+		return !isFluid(level, pos) && !isFluid(level, pos.above()) && !isFluid(level, below);
+	}
+
+	/** Single-eye overload: inlines {@link #isCover(ServerLevel, BlockPos, Vec3[])} without the
+	 * one-element array allocation the hot path of {@link #findApproachPoint} would otherwise eat on
+	 * every candidate (~240 candidates × 2 radii × the per-tick rebuild). */
+	private static boolean isCoverSingle(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
+		if (!isStandableCover(level, pos)) {
+			return false;
+		}
+		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
+		return !Senses.canSee(level, viewerEye, candidateEye);
 	}
 
 	/** True when the cell holds any fluid (water or lava, waterlogged included): somewhere the

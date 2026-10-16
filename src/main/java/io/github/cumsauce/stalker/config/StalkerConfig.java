@@ -121,7 +121,18 @@ public record StalkerConfig(
 	public void save(Path file) {
 		try {
 			Files.createDirectories(file.getParent());
-			Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(toJson()) + "\n");
+			// Atomic write: write to a sibling .tmp file, then move into place. A power cut mid-write
+			// would otherwise leave a half-written config that {@link #load} falls back to defaults on
+			// — silently wiping the player's tuning. The {@code Files.move} with {@code ATOMIC_MOVE}
+			// is at-least atomic within the JVM; on POSIX the rename(2) it lands on is atomic too.
+			Path tmp = file.resolveSibling(file.getFileName().toString() + ".tmp");
+			Files.writeString(tmp, new GsonBuilder().setPrettyPrinting().create().toJson(toJson()) + "\n");
+			try {
+				Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+						java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+			} catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+				Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			}
 		} catch (IOException e) {
 			Stalker.LOGGER.warn("Couldn't save Stalker's settings to {}", file, e);
 		}

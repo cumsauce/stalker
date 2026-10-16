@@ -140,14 +140,29 @@ public final class BribeTables {
 	 * What {@code itemId} is worth to {@code professionId}: the item's table row, else a matching tag row, else the
 	 * raw/cooked food sets for the unemployed, else {@code emeraldValue} for an emerald, else 0.
 	 *
+	 * <p>Kept for unit tests; defaults to nitwits rejecting everything (see
+	 * {@link #value(String, String, Set, int, boolean)} for the live path that respects the config flag).
+	 *
 	 * @param tags tag ids of the offered item ({@link #TAG_WOOL}, {@link #TAG_DYES}, {@link #TAG_TERRACOTTA})
 	 */
 	public static int value(String professionId, String itemId, Set<String> tags, int emeraldValue) {
+		return value(professionId, itemId, tags, emeraldValue, false);
+	}
+
+	/**
+	 * Same as {@link #value(String, String, Set, int)} but lets the caller decide whether nitwits accept an
+	 * emerald ({@code config.nitwitAcceptsEmerald()} on the live path, where the trait is opt-in).
+	 *
+	 * @param tags tag ids of the offered item ({@link #TAG_WOOL}, {@link #TAG_DYES}, {@link #TAG_TERRACOTTA})
+	 * @param nitwitAcceptsEmerald {@code true} when the live config wants nitwits to take emeralds
+	 */
+	public static int value(String professionId, String itemId, Set<String> tags, int emeraldValue,
+			boolean nitwitAcceptsEmerald) {
 		String profession = normalize(professionId);
 		String item = normalize(itemId);
 		if (item.equals(EMERALD)) {
-			// Nitwits value nothing, not even emeralds; the caller's config decides otherwise.
-			return profession.equals("nitwit") ? 0 : emeraldValue;
+			// Nitwits value nothing by default; the live path's config flag can override.
+			return profession.equals("nitwit") ? (nitwitAcceptsEmerald ? emeraldValue : 0) : emeraldValue;
 		}
 		Map<String, Integer> table = TABLES.get(profession);
 		if (table == null || table.isEmpty()) return 0;
@@ -220,14 +235,20 @@ public final class BribeTables {
 
 	/**
 	 * What the offered stack is worth to {@code villager}'s profession, using {@link StalkerConfig#get()} for the
-	 * emerald value and the nitwit rule.
+	 * emerald value and the nitwit rule. Nitwits go through the same pure path as every other profession so the
+	 * two overloads agree (otherwise a live nitwit+emerald with {@code nitwitAcceptsEmerald=true} would score
+	 * above zero while the unit test, which calls the pure overload without the flag, scored zero for the
+	 * same inputs).
 	 */
 	public static int value(Villager villager, ItemStack stack) {
 		StalkerConfig config = StalkerConfig.get();
-		if (isNitwit(villager)) {
-			return config.nitwitAcceptsEmerald() && stack.is(Items.EMERALD) ? config.emeraldValue() : 0;
+		boolean nitwit = isNitwit(villager);
+		// Nitwits can only ever score on an emerald when the config flag is on; every other case short-circuits
+		// to zero so the pure path doesn't have to know about ItemStack.
+		if (nitwit && !(config.nitwitAcceptsEmerald() && stack.is(Items.EMERALD))) {
+			return 0;
 		}
-		return value(professionId(villager), itemId(stack), tags(stack), config.emeraldValue());
+		return value(professionId(villager), itemId(stack), tags(stack), config.emeraldValue(), nitwit);
 	}
 
 	/** True when the offered stack meets {@code bribeThreshold} for {@code villager}'s profession. */
