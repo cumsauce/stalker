@@ -2,9 +2,9 @@
 """Synthesize the stalker's "extended fart plus wet noise" cue.
 
 This is a build-time tool, not shipped with the mod: it renders
-assets/stalker/sounds/voice_fart.ogg from scratch so the sound is fully
-reproducible and carries no third-party audio licensing. Run it only when the
-sound design changes:
+assets/stalker/sounds/voice_fart.ogg from scratch, so the sound carries no
+third-party audio licensing and its whole design lives in this file. Run it
+only when the sound design changes:
 
     python3 tools/gen_fart.py
 
@@ -16,16 +16,19 @@ Design (a ~2 s, single long fart with wet gurgles under it):
   * texture - a constant low-level noise bed so it reads as breathy, not a
               clean tone.
 
-All randomness is seeded so repeated runs produce the identical file.
+All randomness is seeded, so repeated runs produce identical *audio*: the
+decoded samples match bit for bit. The OGG container itself is not
+byte-reproducible -- the encoder writes a fresh stream serial and page
+metadata each run -- so the file hash will differ between runs even though
+the sound does not. Re-run this only when the sound design changes.
 """
 
 import os
-import struct
 
 import numpy as np
 import soundfile as sf
 
-SEED = 0xF17  # fixed so the committed .ogg is reproducible
+SEED = 0xF17  # fixed so the rendered audio is reproducible sample-for-sample
 SAMPLE_RATE = 44100
 DURATION_S = 2.0
 OUT = os.path.join(
