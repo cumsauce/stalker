@@ -11,6 +11,7 @@ import io.github.cumsauce.stalker.net.Net;
 import io.github.cumsauce.stalker.sound.Cues;
 import io.github.cumsauce.stalker.sound.StalkerSounds;
 import io.github.cumsauce.stalker.sound.VoiceCues;
+import io.github.cumsauce.stalker.world.Attachments;
 import io.github.cumsauce.stalker.world.Phases;
 import io.github.cumsauce.stalker.world.StalkerBrain;
 import io.github.cumsauce.stalker.world.StalkerManager;
@@ -164,6 +165,31 @@ public final class Strikes {
 		}
 		CHASE.put(player.getUUID(), new ChaseState());
 		StalkerManager.setPhase(villager, Phases.Phase.CHASE);
+	}
+
+	/**
+	 * Starts variant B (the chase) directly, skipping the strike tell and the A/B roll. For the
+	 * {@code /stalker fart} dev command, which wants the chase every time rather than an 85 % chance
+	 * of one and a 15 % chance of being teleported. Returns false when there is nothing to chase:
+	 * the player is unbound, the villager is not loaded, or a chase/stun is already running.
+	 */
+	public static boolean forceChase(ServerPlayer player) {
+		if (!(player.level() instanceof ServerLevel level)) {
+			return false;
+		}
+		UUID villagerId = Attachments.boundVillager(player).orElse(null);
+		if (villagerId == null) {
+			return false;
+		}
+		Phases.Phase phase = StalkerManager.getPhase(player);
+		if (phase == Phases.Phase.CHASE || phase == Phases.Phase.STUN) {
+			return false;
+		}
+		if (level.getEntity(villagerId) instanceof Villager villager) {
+			chase(villager, player);
+			return true;
+		}
+		return false;
 	}
 
 	/**

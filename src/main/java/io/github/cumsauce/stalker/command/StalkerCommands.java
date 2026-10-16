@@ -10,6 +10,8 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import io.github.cumsauce.stalker.bribe.BribeTables;
 import io.github.cumsauce.stalker.config.StalkerConfig;
+import io.github.cumsauce.stalker.sound.StalkerSounds;
+import io.github.cumsauce.stalker.strike.Strikes;
 import io.github.cumsauce.stalker.world.Attachments;
 import io.github.cumsauce.stalker.world.Phases;
 import io.github.cumsauce.stalker.world.StalkerManager;
@@ -70,6 +72,7 @@ public final class StalkerCommands {
 										.executes(context -> phase(context, EntityArgument.getPlayer(context, "player"))))))
 				.then(target("spot", StalkerCommands::spot))
 				.then(target("strike", StalkerCommands::strike))
+				.then(target("fart", StalkerCommands::fart))
 				.then(target("bribe", StalkerCommands::bribe))
 				.then(Commands.literal("reload").executes(context -> {
 					StalkerConfig.reload();
@@ -190,6 +193,31 @@ public final class StalkerCommands {
 	private static String strike(ServerPlayer player) {
 		StalkerManager.forceStrike(player);
 		return "Forced a strike on " + player.getName().getString() + ".";
+	}
+
+	/**
+	 * Debug helper ({@code /stalker fart}): plays the chase-start fart cue at the player right
+	 * now. Deliberately ignores the {@code foleyVoices} gate and needs no bound villager, so the
+	 * asset can be heard on demand — the one thing a build cannot verify on its own.
+	 *
+	 * <p>When a stalker <em>is</em> bound it also starts the real chase: blindness, Phase.CHASE and
+	 * the villager's pursuit. That path goes through {@link Strikes#forceChase} rather than the
+	 * normal strike so the 15 % snatch roll cannot turn this into a teleport, and so the cue is not
+	 * played a second time by the chase entry. The already-chasing guard keeps a chase in progress
+	 * from being restarted.
+	 */
+	private static String fart(ServerPlayer player) {
+		if (!(player.level() instanceof ServerLevel level)) {
+			return "not in a server level.";
+		}
+		String name = player.getName().getString();
+		if (Attachments.boundVillager(player).isEmpty()) {
+			StalkerSounds.chaseFart(level, player.position());
+			return "Played the fart cue for " + name + " (no stalker bound, so sound only).";
+		}
+		boolean chased = Strikes.forceChase(player);
+		return (chased ? "Started the chase for " : "Played the fart cue for ") + name
+				+ (chased ? " (already chasing or stunned)." : " (bound villager not loaded).");
 	}
 
 	private static String bribe(ServerPlayer player) {

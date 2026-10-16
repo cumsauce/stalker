@@ -59,12 +59,18 @@ public final class StalkerSounds {
 	 * (see {@link VoiceCues#newDraw()}) is that arming it must not shift those.
 	 */
 	public static void chaseFart(Villager villager) {
-		Level level = villager.level();
-		Vec3 at = villager.position();
+		chaseFart(villager.level(), villager.position());
+	}
+
+	/**
+	 * Position-based variant of {@link #chaseFart(Villager)}, for callers with no villager to
+	 * anchor on (the {@code /stalker fart} dev command plays it at the player).
+	 */
+	public static void chaseFart(Level level, Vec3 at) {
 		float pitch = FART_PITCH_MIN
 				+ VoiceCues.newDraw().nextFloat() * (FART_PITCH_MAX - FART_PITCH_MIN);
 		// Positional, no excluded player (null source entity), on the hostile channel like the
-		// other strike tells — it plays where the villager is, not from the lie layer's stale origin.
+		// other strike tells — it plays where the caller says, not from the lie layer's stale origin.
 		level.playSound(null, at.x, at.y, at.z, VOICE_FART, SoundSource.HOSTILE, 0.9f, pitch);
 	}
 }
