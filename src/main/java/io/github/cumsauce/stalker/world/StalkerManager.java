@@ -66,9 +66,6 @@ public final class StalkerManager {
 
 	/** Spotted dash speed (plan §3). */
 
-	/** Closing speed (plan §2). */
-	private static final float STALK_SPEED = 0.75F;
-
 	/** Within this distance of its cover the villager counts as hidden (plan §3). */
 	private static final double AT_COVER_DISTANCE = 1.5;
 
@@ -77,9 +74,6 @@ public final class StalkerManager {
 
 	/** Peek only while the player is within this range (plan §3). */
 	private static final double PEEK_PLAYER_RANGE = 32.0;
-
-	/** Beyond this the villager counts as fallen too far behind (plan §7). */
-	private static final double RELOCATE_DISTANCE = 128.0;
 
 	/** A cover dash that takes longer than this has failed (unreachable point) — give up on it. */
 	private static final int DASH_TIMEOUT_TICKS = 80;
@@ -98,21 +92,35 @@ public final class StalkerManager {
 	/** Rebuild the approach plan when the player has moved this far from where it was planned. */
 	private static final double PLAN_STALE_DISTANCE = 8.0;
 
-	/** Distance at which the stalker counts as fallen behind (plan §7's long-span tracking). */
-	private static final double FALLEN_BEHIND_DISTANCE = 40.0;
-
-	/** Ticks fallen-behind before it quietly repositions (it should never visibly chase). */
-	private static final int FALLEN_BEHIND_RELOCATE_TICKS = 100;
-
-	/** Ring for the fallen-behind reposition: closer than the default, always behind-ish. */
-	private static final int BEHIND_RING_MIN = 24;
-	private static final int BEHIND_RING_MAX = 40;
-
 	/** Rebuild the approach plan after this many ticks even if the player stayed put. */
 	private static final int PLAN_MAX_AGE_TICKS = 200;
 
+	/** Closing speed while it may be observed: deliberately under a walking player's pace so it never
+	 * looks like it is hurrying (play feedback: a fast approach gave it away). */
+	private static final float STALK_SPEED = 0.55F;
+
+	/** Speed for a committed unseen advance. Higher than {@link #STALK_SPEED} so it can genuinely keep
+	 * up over long spans; it is only used while the player cannot see it, so the pace is not the tell. */
+	private static final float HURRY_SPEED = 0.8F;
+
+	/** Distance beyond which an unseen advance switches to {@link #HURRY_SPEED}. */
+	private static final double HURRY_DISTANCE = 10.0;
+
 	/** Slower escape (was 1.25 — a full sprint): reads as scrambling, not teleporting. */
-	private static final float COVER_SPRINT_SPEED = 0.8F;
+	private static final float COVER_SPRINT_SPEED = 0.7F;
+
+	/** Radius searched for villagers that could witness a strike (play feedback: no witnesses → it
+	 * loses patience). */
+	private static final double WITNESS_RADIUS = 24.0;
+
+	/** No other player may be within this radius for the patience strike: it only acts unobserved. */
+	private static final double WITNESS_EXCLUSIVE_PLAYER_RADIUS = 32.0;
+
+	/** Distance within which a hidden, unseen stalker is close enough for the dread heartbeat. */
+	private static final double CLOSE_HEARTBEAT_DISTANCE = 12.0;
+
+	/** Ticks between close-range heartbeats. */
+	private static final int CLOSE_HEARTBEAT_INTERVAL_TICKS = 60;
 
 	/** Ticks between pretend-normal idle glances (never at the player). */
 	private static final int NORMAL_LOOK_INTERVAL_TICKS = 40;
@@ -216,35 +224,10 @@ public final class StalkerManager {
 
 		double distance = villager.distanceTo(player);
 
-		// Relocation accounting (plan §7).
-		if (distance > RELOCATE_DISTANCE) {
-			state.relocateTicks++;
-		} else {
-			state.relocateTicks = 0;
-		}
-		if (state.relocateTicks > c.relocateBehindTicks()) {
-			if (relocate(villager, player, level, c)) {
-				state.relocateTicks = 0;
-				state.resetMovement();
-				return;
-			}
-		}
-
-		// Fallen-behind accounting: outrunning it must not work. Rather than a visible chase (which
-		// gave it away and was escapable by sprinting), it quietly repositions to a hidden point
-		// 24-40 blocks from the player and resumes the stalk from there.
-		if (distance > FALLEN_BEHIND_DISTANCE) {
-			state.fallBehindTicks++;
-			if (state.fallBehindTicks > FALLEN_BEHIND_RELOCATE_TICKS
-					&& relocate(villager, player, level, c, BEHIND_RING_MIN, BEHIND_RING_MAX)) {
-				state.fallBehindTicks = 0;
-				state.advanceTicks = 0;
-				state.resetMovement();
-				return;
-			}
-		} else {
-			state.fallBehindTicks = 0;
-		}
+		// No visible catch-up teleports: the stalker never blinks to the player's side. Keeping its
+		// span is the movement AI's job (unseen advances run at HURRY_SPEED); a villager that is
+		// genuinely absent — unloaded chunk or another dimension, so nothing is rendered — is still
+		// brought back by resolveVillager, which is unobservable.
 
 		// Senses update (STALK and COVER both watch the spotted latch).
 		if (state.phase == Phases.Phase.STALK || state.phase == Phases.Phase.COVER) {
@@ -278,11 +261,20 @@ public final class StalkerManager {
 			return;
 		}
 
-		// Strike trigger (supersedes plan §4's facing rule per play feedback): it attacks only when
-		// it cannot be seen — out of the player's line of sight — and close. Being viewed, even
-		// from behind, never triggers it.
-		if (distance < c.strikeRange() && state.strikeCooldown <= 0
+		// Strike trigger (supersedes plan §4's facing rule per play feedback): it attacks when it
+		// cannot be seen — out of the player's line of sight — and close. Being viewed, even from
+		// behind, never triggers it.
+		if (state.strikeCooldown <= 0 && distance < c.strikeRange()
 			&& !Senses.canSee(level, player, villager)) {
+			Strikes.strike(villager, player);
+			state.resetMovement();
+			return;
+		}
+
+		// The patience strike: viewed or not, if nobody who matters is watching (no villager witness
+		// in sight, no other player around) and the victim holds still, it eventually stops caring
+		// about its own concealment. See tickAmbush.
+		if (tickAmbush(level, player, villager, state, c, distance)) {
 			Strikes.strike(villager, player);
 			state.resetMovement();
 			return;
@@ -328,7 +320,68 @@ public final class StalkerManager {
 			return;
 		}
 
-		issueMovement(villager, state, target, STALK_SPEED);
+		// Speed by observation: hauling itself across the map is only allowed while the player cannot
+		// see it (an unseen advance), and even then only when it has fallen behind. Anything the player
+		// might be watching moves at the slow stalk pace.
+		float speed = advancing
+			? (distance > HURRY_DISTANCE ? HURRY_SPEED : STALK_SPEED)
+			: STALK_SPEED;
+		issueMovement(villager, state, target, speed);
+	}
+
+	/**
+	 * The patience strike (play feedback): if it is close and unobserved — no villager in sight that
+	 * could witness it, no other player nearby — and the victim stands still, it loses patience after
+	 * a few seconds and strikes regardless of whether the victim can see it. The illusion only has to
+	 * hold for witnesses, not for the victim.
+	 *
+	 * @return true on the tick the strike should fire
+	 */
+	private static boolean tickAmbush(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
+		// Stillness: anything more than a hair of movement per tick (walking, sneaking, being pushed)
+		// resets the hold. The stored position is refreshed every tick on purpose, so a slow walk never
+		// accumulates.
+		boolean still = state.lastPlayerPos != null
+			&& state.lastPlayerPos.distanceToSqr(player.position()) < 0.0025;
+		state.lastPlayerPos = player.position();
+
+		boolean holding = Ambush.conditionsHold(distance, c.strikeRange(),
+			villagerWitnesses(level, villager), still)
+			&& !otherPlayerNearby(level, player);
+		if (!holding) {
+			state.ambushTicks = 0;
+			return false;
+		}
+		if (state.ambushTicks == 0) {
+			Cues.ambushWindup(villager);
+		}
+		state.ambushTicks++;
+		return state.strikeCooldown <= 0 && Ambush.ready(state.ambushTicks);
+	}
+
+	/** Villagers other than {@code villager} that can see it — the witnesses a strike must avoid. */
+	private static int villagerWitnesses(ServerLevel level, Villager villager) {
+		int witnesses = 0;
+		for (Villager other : level.getEntitiesOfClass(Villager.class,
+				villager.getBoundingBox().inflate(WITNESS_RADIUS))) {
+			if (other == villager || !other.isAlive()) {
+				continue;
+			}
+			if (Senses.canSee(level, other.getEyePosition(), villager.getEyePosition())) {
+				witnesses++;
+			}
+		}
+		return witnesses;
+	}
+
+	/** True when another player is close enough that this would not be an unobserved strike. */
+	private static boolean otherPlayerNearby(ServerLevel level, ServerPlayer player) {
+		for (ServerPlayer other : level.players()) {
+			if (other != player && other.distanceTo(player) < WITNESS_EXCLUSIVE_PLAYER_RADIUS) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -365,7 +418,11 @@ public final class StalkerManager {
 				double hiddenness = CoverSearch.hiddennessOf(level, point.add(0.0, 1.6, 0.0),
 						player.getEyePosition(), playerPos);
 				double leg = villager.position().distanceTo(point);
-				ranked.add(new Ranked(point, leg + (1.0 - hiddenness) * CoverSearch.EXPOSURE_PENALTY));
+				// Leg score: how far it is, how slow the ground is (water etc.), plus the exposure
+				// penalty — a hidden spot that costs a wade is not a good spot.
+				double cost = leg + CoverSearch.terrainCost(level, villager.position(), point)
+					+ (1.0 - hiddenness) * CoverSearch.EXPOSURE_PENALTY;
+				ranked.add(new Ranked(point, cost));
 			}
 		}
 		ranked.sort((a, b) -> Double.compare(a.score(), b.score()));
@@ -402,8 +459,15 @@ public final class StalkerManager {
 
 	private static void tickCover(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c, double distance) {
 		// Same hidden-only rule as STALK: strike from cover when unseen, out of LOS, and close.
-		if (distance < c.strikeRange() && state.strikeCooldown <= 0
+		if (state.strikeCooldown <= 0 && distance < c.strikeRange()
 			&& !Senses.canSee(level, player, villager)) {
+			villager.setPose(Pose.STANDING);
+			Strikes.strike(villager, player);
+			state.resetMovement();
+			return;
+		}
+		// The patience strike applies from cover too (viewed or not, if unobserved and the victim is still).
+		if (tickAmbush(level, player, villager, state, c, distance)) {
 			villager.setPose(Pose.STANDING);
 			Strikes.strike(villager, player);
 			state.resetMovement();
@@ -461,6 +525,7 @@ public final class StalkerManager {
 					state.peekTicks = PEEK_TICKS;
 					state.peekSide = level.getRandom().nextBoolean();
 					state.peekCooldown = 140 + level.getRandom().nextInt(121);
+					Cues.peek(villager);
 				}
 			}
 		}
@@ -625,6 +690,13 @@ public final class StalkerManager {
 			Cues.footstep(villager);
 			state.footstepCooldown = c.footstepIntervalTicks();
 		}
+		// Dread heartbeat once it is close and hidden: the tell that something is right there.
+		if (state.heartbeatCooldown > 0) {
+			state.heartbeatCooldown--;
+		} else if (distance <= CLOSE_HEARTBEAT_DISTANCE && !Senses.canSee(player.level(), player, villager)) {
+			Cues.closeHeartbeat(villager, c.chaseHeartbeatVolume());
+			state.heartbeatCooldown = CLOSE_HEARTBEAT_INTERVAL_TICKS;
+		}
 	}
 
 	// ------------------------------------------------------------ movement io
@@ -653,13 +725,12 @@ public final class StalkerManager {
 
 	// ----------------------------------------------------------- stuck / move
 
-	private static void tickStuckCheck(ServerLevel level, ServerPlayer player, Villager villager, State state, StalkerConfig c) {
+	private static void tickStuckCheck(Villager villager, State state) {
 		if (state.stuckSampleTicks++ < STUCK_SAMPLE_TICKS) {
 			return;
 		}
 		state.stuckSampleTicks = 0;
 		if (!state.wantsToMove) {
-			state.stuckCycles = 0;
 			return;
 		}
 		Vec3 now = villager.position();
@@ -667,7 +738,6 @@ public final class StalkerManager {
 			&& Math.hypot(now.x - state.lastSampledPos.x, now.z - state.lastSampledPos.z) >= 0.5;
 		state.lastSampledPos = now;
 		if (movedEnough) {
-			state.stuckCycles = 0;
 			return;
 		}
 		villager.stopRiding();
@@ -675,16 +745,10 @@ public final class StalkerManager {
 			villager.jumpFromGround();
 		}
 		// Drop the current path so a fresh one is computed for the same target; otherwise the
-		// navigation keeps replaying a route the villager demonstrably cannot follow.
+		// navigation keeps replaying a route the villager demonstrably cannot follow. No catch-up
+		// teleport here: blinking beside the player is visible, and the unseen advance is what
+		// closes real distance (see tickStalk).
 		villager.getNavigation().stop();
-		state.stuckCycles++;
-		if (state.stuckCycles >= 2) {
-			// One-time catch-up teleport, same rules as relocation (plan §2).
-			if (relocate(villager, player, level, c)) {
-				state.stuckCycles = 0;
-				state.resetMovement();
-			}
-		}
 	}
 
 	// ------------------------------------------------------------- relocation
@@ -732,7 +796,7 @@ public final class StalkerManager {
 		Entity inLevel = level.getEntity(state.villagerId);
 		if (inLevel instanceof Villager villager) {
 			state.unloadedTicks = 0;
-			tickStuckCheck(level, player, villager, state, c);
+			tickStuckCheck(villager, state);
 			return villager;
 		}
 		// Not in the player's dimension (or chunk-unloaded).
@@ -903,6 +967,9 @@ public final class StalkerManager {
 		State state = new State(villager.getUUID());
 		state.phase = Phases.Phase.STALK;
 		STATES.put(player.getUUID(), state);
+		// A single low mumble: the pair is made. Subtle on purpose — the binding is not meant to be an
+		// announcement, just a hint that one villager's routine has changed.
+		Cues.bindStart(villager);
 	}
 
 	// ------------------------------------------------------- command surface
@@ -975,7 +1042,7 @@ public final class StalkerManager {
 			.append(" cover=").append(state.coverPos)
 			.append(" stun=").append(state.stunTicks)
 			.append(" strikeCooldown=").append(state.strikeCooldown)
-			.append(" relocateTicks=").append(state.relocateTicks);
+			.append(" ambush=").append(state.ambushTicks);
 		return sb.toString();
 	}
 
@@ -1150,15 +1217,14 @@ public final class StalkerManager {
 		int strikeCooldown;
 		int stunTicks;
 		int chaseTicks;
-		int relocateTicks;
 		int unloadedTicks;
 		int mumbleCooldown;
 		int footstepCooldown;
+		int heartbeatCooldown;
 		int ticksSinceIssue;
 		Vec3 lastTarget;
 		boolean wantsToMove;
 		int stuckSampleTicks;
-		int stuckCycles;
 		Vec3 lastSampledPos;
 		// Pretend-normal mode (plan §3 fallback): spotted with no usable cover, so act like an
 		// ordinary villager until the player looks away instead of freezing in plain sight.
@@ -1169,9 +1235,10 @@ public final class StalkerManager {
 		int dashTicks;
 		// Committed-advance counter (hysteresis on the unseen gate, see APPROACH_COMMIT_TICKS).
 		int advanceTicks;
-		// Consecutive ticks the player has been out of reach; a sprinting player must not win by
-		// distance — the stalker repositions out of sight instead of visibly chasing.
-		int fallBehindTicks;
+		// Patience-strike hold: ticks the trigger (close, unobserved, victim still) has held.
+		int ambushTicks;
+		// The player's position last tick, for the stillness test in tickAmbush.
+		Vec3 lastPlayerPos;
 		// The committed approach route: hops between cover, nearest first (ApproachPlanner).
 		final ArrayDeque<Vec3> plan = new ArrayDeque<>();
 		// Player position when the plan was built; the plan is rebuilt when they stray from it.
@@ -1198,6 +1265,7 @@ public final class StalkerManager {
 			normalLookTicks = 0;
 			dashTicks = 0;
 			advanceTicks = 0;
+			ambushTicks = 0;
 			plan.clear();
 			planAnchor = null;
 			planAge = 0;

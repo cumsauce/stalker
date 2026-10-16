@@ -6,6 +6,9 @@ import java.util.Optional;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -132,7 +135,8 @@ public final class CoverSearch {
 					}
 					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
 					double hiddenness = hiddennessOf(level, center.add(0.0, 1.6, 0.0), playerEye, playerPos);
-					double score = center.distanceTo(around) + (1.0 - hiddenness) * EXPOSURE_PENALTY;
+					double score = center.distanceTo(around) + terrainCost(level, around, center)
+						+ (1.0 - hiddenness) * EXPOSURE_PENALTY;
 					if (score < bestScore) {
 						bestScore = score;
 						best = pos;
@@ -213,7 +217,7 @@ public final class CoverSearch {
 						continue;
 					}
 					Vec3 center = Vec3.atLowerCornerOf(pos).add(0.5, 0.0, 0.5);
-					double score = center.distanceTo(centre)
+					double score = center.distanceTo(centre) + terrainCost(level, centre, center)
 						+ (fleeWeighted ? fleeWeight * center.distanceTo(viewerEyes[0]) : 0.0);
 					if (fleeWeighted && fleeDirection.lengthSqr() > 1.0E-4) {
 						Vec3 toCover = center.subtract(centre).multiply(1.0, 0.0, 1.0);
@@ -233,10 +237,13 @@ public final class CoverSearch {
 
 	/**
 	 * A candidate is cover when the viewer's eye cannot see an eye placed at
-	 * the candidate position (clip blocked), the block below is solid, and the
-	 * candidate cell is actually standable. Without the passability test a block
-	 * buried in a wall counts as cover (the clip to an eye inside the wall is
-	 * blocked and the block below is solid), so the villager paths into a wall.
+	 * the candidate position (clip blocked), the block below is solid, the
+	 * candidate cell is actually standable, and the cell is dry. Without the
+	 * passability test a block buried in a wall counts as cover (the clip to an
+	 * eye inside the wall is blocked and the block below is solid), so the
+	 * villager paths into a wall. Without the dry test a water cell counts as
+	 * cover too (water has no collision shape) and the villager wades to it,
+	 * which is slow and conspicuous (play feedback: avoid water).
 	 */
 	public static boolean isCover(ServerLevel level, BlockPos pos, Vec3[] viewerEyes) {
 		BlockPos below = pos.below();
@@ -246,6 +253,9 @@ public final class CoverSearch {
 		if (!isPassable(level, pos) || !isPassable(level, pos.above())) {
 			return false;
 		}
+		if (isWet(level, pos) || isWet(level, pos.above()) || isWet(level, below)) {
+			return false;
+		}
 		Vec3 candidateEye = Vec3.atLowerCornerOf(pos).add(0.5, 1.6, 0.5);
 		for (Vec3 eye : viewerEyes) {
 			if (Senses.canSee(level, eye, candidateEye)) {
@@ -253,6 +263,52 @@ public final class CoverSearch {
 			}
 		}
 		return true;
+	}
+
+	/** True when the cell holds water (or a waterlogged block): somewhere the villager would wade. */
+	private static boolean isWet(ServerLevel level, BlockPos pos) {
+		return level.getFluidState(pos).is(FluidTags.WATER);
+	}
+
+	/** Ticks' worth of extra travel charged for one sampled slow block on a leg. */
+	public static final double SLOW_LEG_PENALTY = 4.0;
+
+	/** Maximum total leg penalty, so a single unavoidable stream does not veto every candidate. */
+	private static final double MAX_LEG_PENALTY = 24.0;
+
+	/**
+	 * A distance-equivalent cost for the leg {@code from -> to}: water is slow to wade and other
+	 * blocks (cobweb, powder snow, soul sand, mud) bog a villager down, so a detour over dry ground
+	 * should win. Returns 0 for a clean leg. Sampling is one probe per horizontal block, at the
+	 * interpolated height, so it is cheap enough to run per candidate.
+	 */
+	public static double terrainCost(ServerLevel level, Vec3 from, Vec3 to) {
+		double horizontal = Math.hypot(to.x - from.x, to.z - from.z);
+		int steps = Math.max(1, (int) Math.ceil(horizontal));
+		double cost = 0.0;
+		for (int i = 1; i <= steps; i++) {
+			double f = (double) i / steps;
+			double x = from.x + (to.x - from.x) * f;
+			double y = from.y + (to.y - from.y) * f;
+			double z = from.z + (to.z - from.z) * f;
+			BlockPos feet = BlockPos.containing(x, y, z);
+			if (isWet(level, feet) || isWet(level, feet.above())) {
+				cost += SLOW_LEG_PENALTY;
+			} else if (isBogged(level, feet.below()) || isBogged(level, feet)) {
+				cost += SLOW_LEG_PENALTY * 0.5;
+			}
+			if (cost >= MAX_LEG_PENALTY) {
+				return MAX_LEG_PENALTY;
+			}
+		}
+		return cost;
+	}
+
+	/** Blocks that noticeably slow a walking villager down. */
+	private static boolean isBogged(ServerLevel level, BlockPos pos) {
+		BlockState state = level.getBlockState(pos);
+		return state.is(Blocks.COBWEB) || state.is(Blocks.POWDER_SNOW)
+			|| state.is(Blocks.SOUL_SAND) || state.is(Blocks.MUD);
 	}
 
 	/** True when a villager can stand in this cell (no collision). */

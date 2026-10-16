@@ -40,6 +40,35 @@ public final class Cues {
 		play(villager.level(), villager.position(), SoundEvents.GRASS_STEP, SoundSource.NEUTRAL, (float) cfg().footstepVolume(), 1.0f);
 	}
 
+	/**
+	 * Bind: one distant, low mumble as the pair is made. Deliberately quiet — a hint that one
+	 * villager's routine has changed, not an announcement.
+	 */
+	public static void bindStart(Villager villager) {
+		play(villager.level(), villager.position(), SoundEvents.VILLAGER_AMBIENT, SoundSource.NEUTRAL, 0.4f, 0.55f);
+	}
+
+	/** Peek: a soft, high, curious noise as it leans out of cover to look at the player. */
+	public static void peek(Villager villager) {
+		play(villager.level(), villager.position(), SoundEvents.VILLAGER_AMBIENT, SoundSource.NEUTRAL, 0.15f, 1.4f);
+	}
+
+	/**
+	 * Close-quarters dread: a low heartbeat while it is hidden and very near — the tell that something
+	 * is right there without giving away exactly where.
+	 */
+	public static void closeHeartbeat(Villager villager, double baseVolume) {
+		play(villager.level(), villager.position(), SoundEvents.WARDEN_HEARTBEAT, SoundSource.HOSTILE, (float) (baseVolume * 0.5), 1.0f);
+	}
+
+	/**
+	 * Ambush windup: the patience strike's tell, played once when it stops waiting and decides to act —
+	 * a slow, low stare sting ahead of the strike tell proper.
+	 */
+	public static void ambushWindup(Villager villager) {
+		play(villager.level(), villager.position(), SoundEvents.ENDERMAN_STARE, SoundSource.HOSTILE, 0.6f, 0.7f);
+	}
+
 	/** Spotted dash: {@code block.grass.step} ×2, pitch 1.2, volume 0.7. */
 	public static void dashForCover(Villager villager) {
 		Vec3 at = villager.position();
