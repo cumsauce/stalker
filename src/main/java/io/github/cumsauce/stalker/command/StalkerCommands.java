@@ -117,10 +117,20 @@ public final class StalkerCommands {
 		if (!(player.level() instanceof ServerLevel level)) {
 			return "not in a server level.";
 		}
+		// 1. A real vanilla village at the player's position, via the vanilla /place command
+		// dispatched programmatically (structure placement is not something to reimplement).
+		var source = player.createCommandSourceStack().withSuppressedOutput();
+		level.getServer().getCommands().performPrefixedCommand(source,
+				"place structure minecraft:village_plains ~ ~ ~");
+		// 2. A scatter of extra employed villagers so there is always a candidate even if the
+		// structure's own villagers landed out of reach.
 		List<String> professions = VillagerSpawner.spawnRing(level, player.position(), count, level.getRandom());
-		return "Spawned " + professions.size() + " villager(s)" + (professions.size() < count ? " (wanted " + count + ")" : "")
-				+ " in a ring around " + player.getName().getString()
-				+ (professions.isEmpty() ? "" : ": " + String.join(", ", professions));
+		// 3. Bind one of them right away.
+		boolean bound = StalkerManager.bind(player);
+		return "Placed a vanilla village at your position and spawned " + professions.size()
+				+ " extra villager(s)" + (professions.isEmpty() ? "" : ": " + String.join(", ", professions))
+				+ ". " + (bound ? "A stalker is bound — watch your back."
+						: "Could not bind a stalker (already stalked, or no eligible villager nearby).");
 	}
 
 	/** A subcommand with the default-target form and an optional {@code [player]} argument form. */

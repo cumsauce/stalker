@@ -43,7 +43,7 @@ It goes on the **server** (or in the `mods/` folder of a single-player world). Y
 | `bribe [player]` | Show that villager's profession table and threshold |
 | `reload` | Re-read `config/stalker.json` |
 | `debug` | Toggle the particle overlay (cover candidates, line-of-sight rays, strike range) |
-| `spawn [count]` | Scatter `count` (default 12) employed villagers on standable ground in a ring around you — for testing without a village |
+| `spawn [count]` | One-command test setup: places a real vanilla `village_plains` at your position, scatters `count` (default 12) extra employed villagers, and binds a stalker immediately |
 | `village [huts]` | Build a small hamlet around you: a bell, `huts` (default 4, max 8) simple huts with a door, bed and torch, and one employed villager per hut. Block-level: use on empty-ish ground. (For a real generated village, vanilla's `/place structure minecraft:village_plains` also works.) |
 
 ## Config
