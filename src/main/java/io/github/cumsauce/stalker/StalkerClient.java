@@ -1,7 +1,6 @@
 package io.github.cumsauce.stalker;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -26,6 +25,16 @@ public class StalkerClient implements ClientModInitializer {
 
 	/** Active camera snap, or null. */
 	private static Snap snap;
+
+	/**
+	 * Clamp windows for pitch and volume taken off the wire. Foley's own models only ever produce
+	 * pitches near 1.0 and unity gain, so anything far outside these is a buggy or hostile server,
+	 * not a real cue; clamping keeps it audible-but-sane instead of silent or deafening.
+	 */
+	private static final float MIN_REMOTE_PITCH = 0.25f;
+	private static final float MAX_REMOTE_PITCH = 4.0f;
+	private static final float MIN_REMOTE_VOLUME = 0.0f;
+	private static final float MAX_REMOTE_VOLUME = 4.0f;
 
 	/**
 	 * Queued follow-up beats of a laugh cadence, in arrival order. The server sends one packet per
@@ -96,39 +105,38 @@ public class StalkerClient implements ClientModInitializer {
 		} catch (IllegalArgumentException unknown) {
 			return;
 		}
-		StalkerFoley.play(cue, payload.x(), payload.y(), payload.z(), payload.pitch(), payload.volume());
+		// The payload is remote input: finite-but-absurd magnitudes pass the guard above and would
+		// reach Foley's mixer unmuted and untuned, so clamp to windows the layer actually produces.
+		float pitch = Mth.clamp(payload.pitch(), MIN_REMOTE_PITCH, MAX_REMOTE_PITCH);
+		float volume = Mth.clamp(payload.volume(), MIN_REMOTE_VOLUME, MAX_REMOTE_VOLUME);
+		StalkerFoley.play(cue, payload.x(), payload.y(), payload.z(), pitch, volume);
 		if (cue != VoiceCues.VoiceCue.LAUGH) {
 			return;
 		}
 		// Beat 0 just played; queue the remaining rungs, each one pitch-step lower and one gap later.
 		for (int beat = 1; beat < VoiceCues.LAUGH_CADENCE; beat++) {
-			PENDING_BEATS.add(new PendingBeat(cue, VoiceCues.laughBeatPitch(payload.pitch(), beat),
-					payload.volume(), payload.x(), payload.y(), payload.z(),
+			PENDING_BEATS.add(new PendingBeat(cue, VoiceCues.laughBeatPitch(pitch, beat),
+					volume, payload.x(), payload.y(), payload.z(),
 					beat * VoiceCues.LAUGH_BEAT_GAP_TICKS));
 		}
 	}
 
-	/** Fires queued laugh beats whose countdown has run out, in arrival order. */
+	/**
+	 * Fires queued laugh beats whose countdown has run out, in arrival order.
+	 *
+	 * <p>Removal is by backwards index rather than by value: a due beat is the <em>ticked</em>
+	 * copy, so it no longer equals the stored original, and a value-based removal would match
+	 * nothing — leaving the beat to come due, play, and come due again every tick forever. Walking
+	 * backwards keeps the removal from skipping an element.
+	 */
 	private static void tickVoiceBeats() {
-		if (PENDING_BEATS.isEmpty()) {
-			return;
-		}
-		List<PendingBeat> due = null;
-		for (int i = 0; i < PENDING_BEATS.size(); i++) {
+		for (int i = PENDING_BEATS.size() - 1; i >= 0; i--) {
 			PendingBeat beat = PENDING_BEATS.get(i).tick();
 			if (beat.ticksLeft() <= 0) {
-				if (due == null) {
-					due = new ArrayList<>(2);
-				}
-				due.add(beat);
+				PENDING_BEATS.remove(i);
+				StalkerFoley.play(beat.cue(), beat.x(), beat.y(), beat.z(), beat.pitch(), beat.volume());
 			} else {
 				PENDING_BEATS.set(i, beat);
-			}
-		}
-		if (due != null) {
-			PENDING_BEATS.removeAll(due);
-			for (PendingBeat beat : due) {
-				StalkerFoley.play(beat.cue(), beat.x(), beat.y(), beat.z(), beat.pitch(), beat.volume());
 			}
 		}
 	}

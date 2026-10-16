@@ -15,6 +15,7 @@ import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 
@@ -189,6 +190,10 @@ public final class StalkerManager {
 		initialized = true;
 		// 26.3 Fabric renamed END_WORLD_TICK to END_LEVEL_TICK (same callback shape).
 		ServerTickEvents.END_LEVEL_TICK.register(StalkerManager::tickLevel);
+		// The cover constellation is static and ages on level game time, which restarts low on each
+		// load; without this, traces from the previous world never expire and evict the new world's
+		// marks. Server stop covers both singleplayer and dedicated teardown.
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> CoverTrace.reset());
 		// Drop per-player bookkeeping when a player leaves: the tick loop only sees online players,
 		// so a player who logs off mid-CHASE/STUN would otherwise leave their Strikes entry forever;
 		// the same goes for the debug-particle toggle.

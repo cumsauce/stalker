@@ -200,10 +200,12 @@ public final class CoverTrace {
 	}
 
 	/**
-	 * Clears the constellation. A test seam (fresh state per test) and a clean slate if the manager
-	 * ever needs one; not part of the per-tick path.
+	 * Clears the constellation. Called on server stop so one JVM's traces cannot leak into the next
+	 * loaded world: {@code createdTick} comes from {@code level.getGameTime()}, which restarts low on
+	 * a fresh load, so a stale entry would sit at a negative age forever (never expiring) while
+	 * {@link #evictOldest} evicted the <em>new</em> world's fresh marks instead. Also a test seam.
 	 */
-	static void reset() {
+	public static void reset() {
 		TRACES.clear();
 	}
 

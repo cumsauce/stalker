@@ -102,12 +102,6 @@ public final class CoverSearch {
 		return exposure;
 	}
 
-	/**
-	 * An approach step (staged closing): a standable, LOS-blocked spot near
-	 * {@code around}, which sits on the line toward the player. The stalker
-	 * paths to these one at a time instead of beelining, so it advances by
-	 * cover rather than in a straight dash across open ground.
-	 */
 	/** How strongly a visible approach spot is penalised relative to a fully hidden one. */
 	public static final double EXPOSURE_PENALTY = 6.0;
 
@@ -134,10 +128,11 @@ public final class CoverSearch {
 
 	/**
 	 * An approach step (staged closing): a standable, LOS-blocked spot near
-	 * {@code around}, which sits on the line toward the player. Scored by how
-	 * hidden the spot is — rays to five points around the player — against the
-	 * distance it adds, so the villager prefers spots that stay hidden even if
-	 * the player shifts.
+	 * {@code around}, swept over all sixteen compass directions and three radii. Directional bias
+	 * is left to the caller — {@link io.github.cumsauce.stalker.world.ApproachPlanner#plan}
+	 * discards any hop that fails its minimum-progress rule — so the score here is purely how
+	 * hidden the spot is (rays to five points around the player) against the distance it adds,
+	 * keeping the villager in cover even as the player shifts.
 	 */
 	public static Optional<BlockPos> findApproachPoint(ServerLevel level, Vec3 around, Vec3 playerEye, Vec3 playerPos) {
 		BlockPos best = null;
@@ -298,7 +293,7 @@ public final class CoverSearch {
 
 	/** Single-eye overload: inlines {@link #isCover(ServerLevel, BlockPos, Vec3[])} without the
 	 * one-element array allocation the hot path of {@link #findApproachPoint} would otherwise eat on
-	 * every candidate (~240 candidates × 2 radii × the per-tick rebuild). */
+	 * every candidate (~240 candidates per rebuild: 16 directions × 3 radii × 5 y-spreads). */
 	private static boolean isCoverSingle(ServerLevel level, BlockPos pos, Vec3 viewerEye) {
 		if (!isStandableCover(level, pos)) {
 			return false;

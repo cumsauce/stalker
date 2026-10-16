@@ -110,6 +110,11 @@ public final class VillagerSpawner {
 			int z = BlockPos.containing(0.0, 0.0, centre.z + Math.sin(angle) * radius).getZ();
 			Direction facing = Direction.fromYRot((float) (Math.toDegrees(angle) + 180.0));
 			BlockPos doorFront = buildHut(level, new BlockPos(x, 0, z), facing, random);
+			// buildHut returns null when the column is at world bottom (void/unloaded) — spawning
+			// there would drop a villager into the void, so skip the hut entirely.
+			if (doorFront == null) {
+				continue;
+			}
 			String job = spawnOneAt(level, doorFront, random);
 			if (job != null) {
 				professions.add(job);
@@ -138,12 +143,13 @@ public final class VillagerSpawner {
 	 * A 5x5 hut with its door on the {@code facing} side. Positions are resolved against the
 	 * heightmap at the hut's centre column.
 	 *
-	 * @return the position in front of the door, where a villager is spawned
+	 * @return the position in front of the door, where a villager is spawned — or {@code null} when
+	 *         the column is at world bottom and a hut cannot be placed there
 	 */
 	private static BlockPos buildHut(ServerLevel level, BlockPos centreColumn, Direction facing, RandomSource random) {
 		int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING, centreColumn.getX(), centreColumn.getZ());
 		if (y <= level.getMinY()) {
-			return centreColumn;
+			return null;
 		}
 		int half = HUT_SIZE / 2;
 		int x0 = centreColumn.getX() - half;

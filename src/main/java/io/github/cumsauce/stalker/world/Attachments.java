@@ -109,6 +109,11 @@ public final class Attachments {
 		// getAttached never runs the type's initializer (only getAttachedOrCreate does), so the map
 		// must be created on demand; setAttached afterwards so the change is marked and saved.
 		Map<UUID, Long> blacklist = player.getAttachedOrCreate(BLACKLIST);
+		// Prune expired entries before inserting. The attachment is persistent and copyOnDeath, so
+		// without this every villager a player has ever failed to bribe stays serialized to disk
+		// for the life of the world. Insert-then-prune keeps the just-added entry, which is never
+		// expired (its expiry is now + durationTicks, and durationTicks is > 0).
+		blacklist.entrySet().removeIf(entry -> entry.getValue() <= level.getGameTime());
 		blacklist.put(villagerId, level.getGameTime() + durationTicks);
 		player.setAttached(BLACKLIST, blacklist);
 	}
