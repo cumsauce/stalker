@@ -1,0 +1,114 @@
+name: Test World
+
+# Builds a downloadable Minecraft world save for manually exercising the mod.
+# Runs on demand and on release tags only -- a world save is tens of MB, so it
+# does not belong on every push, and it needs no mod build (the save is plain
+# vanilla data; you load it with the mod installed).
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  MC_VERSION: '26.3'
+  # Flat layers: grass at y=-61, so entities stand at y=-60. Fixed heights keep
+  # every structured command in tools/test-world-commands.txt deterministic.
+  WORLD_SETTINGS: '{"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains"}'
+
+jobs:
+  world:
+    name: Generate world save
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Download the vanilla server jar
+        run: |
+          set -euo pipefail
+          manifest=$(curl -fsSL https://piston-meta.mojang.com/mc/game/version_manifest_v2.json)
+          version_url=$(printf '%s' "$manifest" \
+            | jq -r --arg v "$MC_VERSION" '.versions[] | select(.id == $v) | .url' | head -n1)
+          if [ -z "$version_url" ] || [ "$version_url" = "null" ]; then
+            echo "::error::Minecraft $MC_VERSION is not in the version manifest"
+            exit 1
+          fi
+          meta=$(curl -fsSL "$version_url")
+          server_url=$(printf '%s' "$meta" | jq -r '.downloads.server.url')
+          server_sha1=$(printf '%s' "$meta" | jq -r '.downloads.server.sha1')
+          curl -fsSL -o server.jar "$server_url"
+          printf '%s  server.jar\n' "$server_sha1" | sha1sum -c -
+
+      - name: Configure the server
+        run: |
+          set -euo pipefail
+          mkdir -p run
+          printf 'eula=true\n' > run/eula.txt
+          {
+            printf 'online-mode=false\n'
+            printf 'level-name=world\n'
+            printf 'level-type=minecraft:flat\n'
+            printf 'level-seed=stalker-test-world\n'
+            printf 'generator-settings=%s\n' "$WORLD_SETTINGS"
+            printf 'spawn-protection=0\n'
+            printf 'max-tick-time=-1\n'
+            printf 'sync-chunk-writes=true\n'
+            printf 'difficulty=normal\n'
+            printf 'view-distance=10\n'
+            printf 'simulation-distance=10\n'
+            printf 'allow-nether=false\n'
+            printf 'enable-command-block=false\n'
+            printf 'motd=stalker test world\n'
+          } > run/server.properties
+
+      - name: Generate the world
+        working-directory: run
+        # The server reads console commands from stdin. Wait for its "Done"
+        # line first, then feed the version-controlled command list. Console
+        # commands run in order on the server thread, so save-all is queued
+        # after the placement commands without an arbitrary delay between them.
+        run: |
+          set -eu
+          {
+            for _ in $(seq 1 300); do
+              grep -q 'Done (' logs/latest.log 2>/dev/null && break
+              sleep 1
+            done
+            if ! grep -q 'Done (' logs/latest.log 2>/dev/null; then
+              echo '::error::server did not reach "Done" within 300s'
+              exit 1
+            fi
+            cat ../tools/test-world-commands.txt
+            echo 'save-all flush'
+            sleep 5
+            echo 'stop'
+          } | timeout 900 java -Xmx3G -jar ../server.jar nogui
+
+      - name: Verify and package
+        working-directory: run
+        run: |
+          set -euo pipefail
+          test -f world/level.dat || { echo '::error::no world/level.dat'; exit 1; }
+          compgen -G 'world/region/*.mca' > /dev/null || { echo '::error::no region files'; exit 1; }
+          if grep -E 'Unknown or incomplete command|Incorrect argument for command|Failed to place|Unable to summon' logs/latest.log; then
+            echo '::error::one or more generation commands failed (see matches above)'
+            exit 1
+          fi
+          rm -f world/session.lock
+          zip -qr ../stalker-test-world.zip world
+          ls -lh ../stalker-test-world.zip
+
+      - name: Upload world save
+        uses: actions/upload-artifact@v7
+        with:
+          name: stalker-test-world
+          path: stalker-test-world.zip
+          retention-days: 30

@@ -1,0 +1,28 @@
+gamerule doMobSpawning false
+gamerule doDaylightCycle false
+gamerule doWeatherCycle false
+gamerule doFireTick false
+gamerule mobGriefing false
+gamerule randomTickSpeed 0
+time set noon
+weather clear
+forceload add -112 -112 112 112
+place structure minecraft:village_plains 0 -61 0
+place structure minecraft:village_plains 72 -61 8
+place structure minecraft:village_plains 32 -61 72
+fill 18 -60 18 22 -57 22 minecraft:oak_leaves
+fill -26 -60 20 -22 -57 24 minecraft:oak_leaves
+fill 40 -60 -30 44 -57 -26 minecraft:oak_leaves
+fill -34 -60 -32 -30 -57 -28 minecraft:oak_leaves
+fill 96 -60 40 96 -57 48 minecraft:stone
+fill -44 -60 96 -36 -57 96 minecraft:stone
+fill 20 -60 -70 28 -57 -70 minecraft:stone
+summon villager 4 -60 4 {VillagerData:{profession:"minecraft:farmer",level:2,type:"minecraft:plains"}}
+summon villager -6 -60 10 {VillagerData:{profession:"minecraft:librarian",level:2,type:"minecraft:plains"}}
+summon villager 12 -60 -6 {VillagerData:{profession:"minecraft:toolsmith",level:2,type:"minecraft:plains"}}
+summon villager -14 -60 -2 {VillagerData:{profession:"minecraft:butcher",level:2,type:"minecraft:plains"}}
+summon villager 20 -60 14 {VillagerData:{profession:"minecraft:farmer",level:2,type:"minecraft:plains"}}
+summon villager -22 -60 16 {VillagerData:{profession:"minecraft:cleric",level:2,type:"minecraft:plains"}}
+summon villager 6 -60 -18 {VillagerData:{profession:"minecraft:fletcher",level:2,type:"minecraft:plains"}}
+summon villager -10 -60 -24 {VillagerData:{profession:"minecraft:armorer",level:2,type:"minecraft:plains"}}
+forceload remove all
